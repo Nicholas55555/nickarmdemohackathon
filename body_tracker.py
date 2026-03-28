@@ -405,10 +405,13 @@ class HandPairTracker:
             return out
 
         # ── Calibration offset ────────────────────────────────────────
+        # ── Calibration offset ────────────────────────────────────────
         if self.calibrated:
-            for j in raw:
+            for j in list(raw.keys()):
                 if j == "J6":
                     continue
+                if j not in self._cal:
+                    continue  # this joint wasn't present at calibration time
                 home = self._j1_home if j == "J1" else SERVO[j][2]
                 raw[j] = _clamp((raw[j] - self._cal[j]) + home, *SERVO[j][:2])
 
@@ -450,9 +453,11 @@ class HandPairTracker:
     def calibrate(self, raw_angles, left_hand_lms=None):
         """
         Store current angles as home reference.
-        If left hand landmarks available, store hand scale for depth reference.
+        Merges into existing cal dict so partial calibration doesn't
+        wipe out previously calibrated joints.
         """
-        self._cal = dict(raw_angles)
+        for j, v in raw_angles.items():
+            self._cal[j] = v
         self.calibrated = True
         for b in self._bufs.values():
             b.clear()
