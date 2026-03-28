@@ -254,16 +254,55 @@ class App:
                                    padx=3, pady=1, command=self._toggle_lock_view)
         self.btn_lock.pack(side=tk.RIGHT, padx=1)
 
-        # RIGHT — controls (scrollable via pack order)
-        rf = ttk.Frame(body, style="D.TFrame")
-        rf.grid(row=0, column=2, sticky="nsew", padx=(3,0))
+        # RIGHT — controls (scrollable)
+        scroll_container = ttk.Frame(body, style="D.TFrame")
+        scroll_container.grid(row=0, column=2, sticky="nsew", padx=(3, 0))
+        scroll_container.rowconfigure(0, weight=1)
+        scroll_container.columnconfigure(0, weight=1)
+
+        rf_canvas = tk.Canvas(scroll_container, bg=BG, highlightthickness=0)
+        rf_canvas.grid(row=0, column=0, sticky="nsew")
+
+        rf_scrollbar = ttk.Scrollbar(scroll_container, orient="vertical", command=rf_canvas.yview)
+        rf_scrollbar.grid(row=0, column=1, sticky="ns")
+        rf_canvas.configure(yscrollcommand=rf_scrollbar.set)
+
+        # The actual frame that will hold all your controls
+        rf = ttk.Frame(rf_canvas, style="D.TFrame")
+        rf_window = rf_canvas.create_window((0, 0), window=rf, anchor="nw")
+
+        # 1. Update the canvas scroll region whenever the inner frame's height changes
+        rf.bind("<Configure>", lambda e: rf_canvas.configure(scrollregion=rf_canvas.bbox("all")))
+
+        # 2. Force the inner frame to expand and match the canvas's width
+        rf_canvas.bind("<Configure>", lambda e: rf_canvas.itemconfigure(rf_window, width=e.width))
+
+        # 3. Cross-platform mouse wheel scrolling (only active when hovering over the panel)
+        def _on_mousewheel(event):
+            if sys.platform == "win32":
+                rf_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            else:  # macOS / generic
+                rf_canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
+
+        def _bind_scroll(e):
+            rf_canvas.bind_all("<MouseWheel>", _on_mousewheel)
+            rf_canvas.bind_all("<Button-4>", lambda e: rf_canvas.yview_scroll(-1, "units"))  # Linux up
+            rf_canvas.bind_all("<Button-5>", lambda e: rf_canvas.yview_scroll(1, "units"))  # Linux down
+
+        def _unbind_scroll(e):
+            rf_canvas.unbind_all("<MouseWheel>")
+            rf_canvas.unbind_all("<Button-4>")
+            rf_canvas.unbind_all("<Button-5>")
+
+        scroll_container.bind("<Enter>", _bind_scroll)
+        scroll_container.bind("<Leave>", _unbind_scroll)
 
         def btn(p, t, bg_c, cmd, **kw):
-            b = tk.Button(p, text=t, font=("Consolas",8,"bold"), bg=bg_c,
+            b = tk.Button(p, text=t, font=("Consolas", 8, "bold"), bg=bg_c,
                           fg="white", activebackground="#444", relief=tk.FLAT,
                           padx=4, pady=1, command=cmd, **kw)
-            b.pack(fill=tk.X, padx=3, pady=1); return b
-
+            b.pack(fill=tk.X, padx=3, pady=1);
+            return b
         bf = ttk.LabelFrame(rf, text=" Controls ", style="D.TLabelframe")
         bf.pack(fill=tk.X, pady=(0,2))
         self.btn_cam = btn(bf, "Start Camera", "#1b4332", self._toggle_cam)
@@ -283,7 +322,7 @@ class App:
         for jn, lbl in [("J1", "J1"), ("J5", "J5")]:
             box = ttk.Frame(dr1, style="D.TFrame")
             box.pack(side=tk.LEFT, expand=True)
-            d = DegreeDial(box, size=64, value=0, label=lbl,
+            d = DegreeDial(box, size=56, value=0, label=lbl,
                            command=lambda v, j=jn: self._on_dial(j, v))
             d.pack(padx=1)
             self._home_dials[jn] = d
@@ -300,7 +339,7 @@ class App:
             self._home_dials[jn] = d
 
         # ── Forearm Sensitivity ──────────────────────────────────────
-        fsf = ttk.LabelFrame(rf, text=" Forearm Sensitivity ", style="D.TLabelframe")
+        fsf = ttk.LabelFrame(rf, text=" Forearm Sens. ", style="D.TLabelframe")
         fsf.pack(fill=tk.X, pady=2)
         self._sens_sliders = {}
         for jn, lbl, default in [("J1", "J1 Base", 20), ("J2", "J2 Shldr", 20),
@@ -319,6 +358,24 @@ class App:
             sc.set(default)
             sc.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=1)
             self._sens_sliders[jn] = sc
+
+        # ── Finger Sensitivity ───────────────────────────────────────
+        fgf = ttk.LabelFrame(rf, text=" Finger Sens. ", style="D.TLabelframe")
+        fgf.pack(fill=tk.X, pady=2)
+        for key, lbl, default in [("left", "L-Hand", 50), ("right", "R-Hand", 50)]:
+            r = ttk.Frame(fgf, style="D.TFrame")
+            r.pack(fill=tk.X, padx=4, pady=1)
+            ttk.Label(r, text=f"{lbl}:", width=8, style="D.TLabel",
+                      font=("Consolas", 7)).pack(side=tk.LEFT)
+            sl = ttk.Label(r, text=f"{default}%", width=4, style="D.TLabel",
+                           font=("Consolas", 7))
+            sl.pack(side=tk.RIGHT)
+            sc = tk.Scale(r, from_=0, to=100, orient=tk.HORIZONTAL, bg=BG,
+                          fg=FG, troughcolor=PANEL, highlightbackground=BG,
+                          activebackground="#59794a", length=70, showvalue=False,
+                          command=lambda v, k=key, l=sl: self._on_finger_sens(k, int(float(v)), l))
+            sc.set(default)
+            sc.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=1)
 
         # ── Platform ─────────────────────────────────────────────────
         pf = ttk.LabelFrame(rf, text=" Platform ", style="D.TLabelframe")
@@ -406,14 +463,12 @@ class App:
     def _on_3d_press(self, event):
         if event.button != 1:
             return
-        # Claw drag mode → IK drag (disable view rotation)
         if self._claw_drag:
             self._block_drag = True
             self._drag_start_ee = self.arm.get_end_effector().copy()
             self._mouse_press_pos = (event.x, event.y)
             self._disable_mpl_rotation()
             return
-        # Check if a block is grabbed → drag block via IK
         grabbed = [b for b in self.physics.blocks if b.grabbed]
         if grabbed:
             self._block_drag = True
@@ -421,7 +476,6 @@ class App:
             self._mouse_press_pos = (event.x, event.y)
             self._disable_mpl_rotation()
             return
-        # Otherwise → normal view rotation (unless locked)
         if not self._view_locked:
             self._drag_active = True
             self._enable_mpl_rotation()
@@ -429,12 +483,11 @@ class App:
             self._disable_mpl_rotation()
 
     def _on_3d_release(self, event):
-        was_ik_drag = self._block_drag
+        was_ik = self._block_drag
         self._drag_active = False
         self._block_drag = False
         self._mouse_press_pos = None
-        # Re-enable rotation after IK drag ends (unless locked/claw mode)
-        if was_ik_drag and not self._claw_drag and not self._view_locked:
+        if was_ik and not self._claw_drag and not self._view_locked:
             self._enable_mpl_rotation()
 
     def _on_3d_motion(self, event):
@@ -442,12 +495,23 @@ class App:
             return
         if event.x is None or event.y is None:
             return
-        dx = (event.x - self._mouse_press_pos[0]) * 1.5
-        dy = -(event.y - self._mouse_press_pos[1]) * 1.5
+        dx = (event.x - self._mouse_press_pos[0])
+        dy = (event.y - self._mouse_press_pos[1])
+
+        # Camera-relative movement:
+        # Horizontal drag → move perpendicular to camera view (XZ plane)
+        # Vertical drag → move up/down (Y axis)
         azim_rad = math.radians(self._view_azim)
-        move_x = dx * math.cos(azim_rad) - dy * math.sin(azim_rad) * 0.3
-        move_z = dx * math.sin(azim_rad) + dy * math.cos(azim_rad) * 0.3
-        move_y = dy * 0.7
+
+        # View-right direction in plot space → arm XZ plane
+        right_x = -math.sin(azim_rad)
+        right_z = math.cos(azim_rad)
+
+        scale = 1.2  # pixels to mm
+        move_x = dx * right_x * scale
+        move_z = dx * right_z * scale
+        move_y = -dy * scale  # up = negative screen Y
+
         target = self._drag_start_ee + np.array([move_x, move_y, move_z])
         target[1] = max(5, target[1])
         ik = self.arm.solve_angles_for_position(target)
@@ -561,53 +625,39 @@ class App:
             # ── Home direction arrows ─────────────────────────────────
             yaw = np.radians(self.arm.angles["J1"])
 
-            # J1 arrow on ground — points in the arm's forward direction at j1_home
-            # FK: at yaw angle, forward = (cos(yaw), 0, sin(yaw)) in arm coords
-            # Plot mapping p(v)=(arm_X, arm_Z, arm_Y), so plot = (cos(yaw), sin(yaw), 0)
+            # J1 arrow — FK: forward = (cos(yaw), 0, sin(yaw)) → plot (cos,sin,0)
             j1_home = self._homes.get("J1", 0)
             j1_rad = math.radians(j1_home)
             alen = 65
-            # Arrow in plot coords
-            arrow_px = alen * math.cos(j1_rad)   # plot X = arm cos(yaw)
-            arrow_py = alen * math.sin(j1_rad)   # plot Y = arm sin(yaw)
+            arrow_px = alen * math.cos(j1_rad)
+            arrow_py = alen * math.sin(j1_rad)
             a0_px = arrow_px * 0.25; a0_py = arrow_py * 0.25
             ax.plot([a0_px, arrow_px], [a0_py, arrow_py], [ph, ph],
                     color="#facc15", lw=2.5, alpha=.8)
-            # Arrowhead — two barbs perpendicular to arrow direction
-            back_px = arrow_px - 12 * math.cos(j1_rad)
-            back_py = arrow_py - 12 * math.sin(j1_rad)
-            perp_px = -8 * math.sin(j1_rad)
-            perp_py = 8 * math.cos(j1_rad)
-            ax.plot([arrow_px, back_px + perp_px], [arrow_py, back_py + perp_py],
+            back_px = arrow_px - 12*math.cos(j1_rad)
+            back_py = arrow_py - 12*math.sin(j1_rad)
+            pp_x = -8*math.sin(j1_rad); pp_y = 8*math.cos(j1_rad)
+            ax.plot([arrow_px, back_px+pp_x], [arrow_py, back_py+pp_y],
                     [ph, ph], color="#facc15", lw=2, alpha=.6)
-            ax.plot([arrow_px, back_px - perp_px], [arrow_py, back_py - perp_py],
+            ax.plot([arrow_px, back_px-pp_x], [arrow_py, back_py-pp_y],
                     [ph, ph], color="#facc15", lw=2, alpha=.6)
-            ax.text(arrow_px * 1.15, arrow_py * 1.15, ph + 6,
+            ax.text(arrow_px*1.15, arrow_py*1.15, ph+6,
                     "J1H", color="#facc15", fontsize=5, ha="center", alpha=.5)
 
-            # J2-J4 arrows at joint positions (pitch offset direction in arm plane)
-            # Arm plane: forward = (cos(yaw), 0, sin(yaw)), up = (0, 1, 0)
+            # J2-J4 arrows in arm's swing plane
             arm_fwd = np.array([math.cos(yaw), 0, math.sin(yaw)])
             arm_up = np.array([0, 1, 0])
-            arrow_joints = [
-                ("J2", 1, "#22d3ee", 25),
-                ("J3", 2, "#22d3ee", 20),
-                ("J4", 3, "#a78bfa", 18),
-            ]
+            arrow_joints = [("J2",1,"#22d3ee",25),("J3",2,"#22d3ee",20),("J4",3,"#a78bfa",18)]
             for jn, idx, col, al in arrow_joints:
-                home_val = self._homes.get(jn, SERVO[jn][2])
-                offset = home_val - SERVO[jn][2]
+                offset = self._homes.get(jn, SERVO[jn][2]) - SERVO[jn][2]
                 if abs(offset) > 0.5:
                     jpos = pts[idx]
-                    # Direction the link points at this offset angle
                     off_rad = math.radians(offset)
-                    direction = arm_fwd * math.sin(off_rad) + arm_up * math.cos(off_rad)
+                    direction = arm_fwd*math.sin(off_rad) + arm_up*math.cos(off_rad)
                     tip = jpos + direction * al
                     s = p(jpos); e = p(tip)
-                    ax.plot([s[0],e[0]], [s[1],e[1]], [s[2],e[2]],
-                            color=col, lw=1.8, alpha=.6)
-                    ax.text(e[0], e[1], e[2]+5, f"{jn}H",
-                            color=col, fontsize=4, ha="center", alpha=.5)
+                    ax.plot([s[0],e[0]],[s[1],e[1]],[s[2],e[2]],color=col,lw=1.8,alpha=.6)
+                    ax.text(e[0],e[1],e[2]+5,f"{jn}H",color=col,fontsize=4,ha="center",alpha=.5)
 
             # J5 arrow (roll direction at J5 position)
             j5_home = self._homes.get("J5", 0)
@@ -769,7 +819,8 @@ class App:
                 a = result["angles"]
                 la = "L:OK" if result.get("left_hand_ok") else "L:--"
                 ra = "R:OK" if result.get("right_hand_ok") else "R:--"
-                self.info_lbl.config(text=f"{la} {ra}")
+                wk = " WINK" if result.get("face_ok") else ""
+                self.info_lbl.config(text=f"{la} {ra}{wk}")
                 g = a.get("J6", 73)
                 self.grip_lbl.config(
                     text=f"Claw:{'OPEN' if g>(SERVO['J6'][0]+SERVO['J6'][1])/2 else 'CLOSED'}")
@@ -838,7 +889,6 @@ class App:
         if self._last and self._last["detected"]:
             left_lms = self._last.get("left_hand_lms")
             self.tracker.calibrate(self._last["raw_angles"], left_lms)
-            # Go to USER's home (not config defaults)
             for j in self.arm.JOINTS:
                 self.arm.set_angle(j, self._homes.get(j, SERVO[j][2]))
             self.arm.enforce_ground_constraint()
@@ -847,9 +897,8 @@ class App:
         else: self._log("No hands")
 
     def _on_dial(self, joint, offset_deg):
-        """Handle home offset dial change. Value is offset from default home."""
-        default_home = SERVO[joint][2]
-        absolute = default_home + offset_deg
+        """Dial value is offset from default home."""
+        absolute = SERVO[joint][2] + offset_deg
         absolute = max(SERVO[joint][0], min(SERVO[joint][1], absolute))
         self._homes[joint] = absolute
         if self.tracker:
@@ -857,17 +906,21 @@ class App:
         self._draw_arm()
 
     def _on_sens(self, joint, val, label_widget):
-        """Handle forearm sensitivity slider change."""
         label_widget.config(text=f"{val}%")
         if self.tracker:
-            if joint == "J1":
-                self.tracker.j1_forearm_sens = val
-            elif joint == "J2":
-                self.tracker.j2_forearm_sens = val
-            elif joint == "J4":
-                self.tracker.j4_forearm_sens = val
-            elif joint == "J5":
-                self.tracker.j5_forearm_sens = val
+            if joint == "J1": self.tracker.j1_forearm_sens = val
+            elif joint == "J2": self.tracker.j2_forearm_sens = val
+            elif joint == "J4": self.tracker.j4_forearm_sens = val
+            elif joint == "J5": self.tracker.j5_forearm_sens = val
+
+    def _on_finger_sens(self, key, val, label_widget):
+        """Handle finger sensitivity slider (left or right hand)."""
+        label_widget.config(text=f"{val}%")
+        if self.tracker:
+            if key == "left":
+                self.tracker.left_finger_sens = val
+            elif key == "right":
+                self.tracker.right_finger_sens = val
 
     def _go_home(self):
         self.macro.cancel()
@@ -928,6 +981,7 @@ class App:
             try: self.tracker.release()
             except: pass
         self.root.destroy()
+
 
 
 def main():
