@@ -303,8 +303,8 @@ class App:
         fsf = ttk.LabelFrame(rf, text=" Forearm Sensitivity ", style="D.TLabelframe")
         fsf.pack(fill=tk.X, pady=2)
         self._sens_sliders = {}
-        for jn, lbl, default in [("J1", "J1 Base", 70), ("J2", "J2 Shldr", 50),
-                                  ("J4", "J4 Wrist", 0), ("J5", "J5 Roll", 0)]:
+        for jn, lbl, default in [("J1", "J1 Base", 20), ("J2", "J2 Shldr", 20),
+                                  ("J4", "J4 Wrist", 20), ("J5", "J5 Roll", 20)]:
             r = ttk.Frame(fsf, style="D.TFrame")
             r.pack(fill=tk.X, padx=4, pady=1)
             ttk.Label(r, text=f"{lbl}:", width=8, style="D.TLabel",
