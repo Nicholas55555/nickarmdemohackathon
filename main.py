@@ -1096,12 +1096,14 @@ class App:
         print(f"[TK] {''.join(traceback.format_exception(*a))}", file=sys.stderr)
 
     def _show_help(self):
-        """Open a help window with full user guide."""
+        """Open a help window displaying the project README.md."""
+        import os, re
+
         hw = tk.Toplevel(self.root)
         hw.title("MARS — Help & Guide")
         hw.configure(bg=BG)
-        hw.geometry("620x780")
-        hw.minsize(500, 600)
+        hw.geometry("720x850")
+        hw.minsize(600, 500)
 
         # Scrollable text
         frame = tk.Frame(hw, bg=BG)
@@ -1110,195 +1112,135 @@ class App:
         sb.pack(side=tk.RIGHT, fill=tk.Y)
         txt = tk.Text(frame, bg="#0d1117", fg="#c9d1d9", font=("Consolas", 9),
                       wrap=tk.WORD, yscrollcommand=sb.set, relief=tk.FLAT,
-                      insertbackground="#c9d1d9", padx=12, pady=12)
+                      insertbackground="#c9d1d9", padx=14, pady=14,
+                      spacing1=1, spacing3=1)
         txt.pack(fill=tk.BOTH, expand=True)
         sb.config(command=txt.yview)
 
-        # Tags for formatting
-        txt.tag_configure("h1", font=("Consolas", 14, "bold"), foreground=ACCENT)
-        txt.tag_configure("h2", font=("Consolas", 11, "bold"), foreground="#f59e0b")
-        txt.tag_configure("h3", font=("Consolas", 10, "bold"), foreground="#10b981")
-        txt.tag_configure("key", font=("Consolas", 9, "bold"), foreground="#818cf8")
-        txt.tag_configure("mode", font=("Consolas", 9, "bold"), foreground="#06b6d4")
+        # Tags for markdown rendering
+        txt.tag_configure("h1", font=("Consolas", 16, "bold"), foreground=ACCENT,
+                          spacing1=8, spacing3=4)
+        txt.tag_configure("h2", font=("Consolas", 13, "bold"), foreground="#f59e0b",
+                          spacing1=12, spacing3=4)
+        txt.tag_configure("h3", font=("Consolas", 11, "bold"), foreground="#10b981",
+                          spacing1=8, spacing3=2)
+        txt.tag_configure("h4", font=("Consolas", 10, "bold"), foreground="#818cf8",
+                          spacing1=6, spacing3=2)
+        txt.tag_configure("code", font=("Consolas", 9), foreground="#7dd3fc",
+                          background="#161b22")
+        txt.tag_configure("codeblock", font=("Consolas", 8), foreground="#7dd3fc",
+                          background="#161b22", lmargin1=20, lmargin2=20,
+                          spacing1=0, spacing3=0)
+        txt.tag_configure("bold", font=("Consolas", 9, "bold"), foreground="#e2e8f0")
+        txt.tag_configure("hr", foreground="#30363d")
+        txt.tag_configure("table", font=("Consolas", 8), foreground="#c9d1d9",
+                          background="#0d1117", lmargin1=10, lmargin2=10)
+        txt.tag_configure("tablehead", font=("Consolas", 8, "bold"),
+                          foreground="#f59e0b", background="#0d1117",
+                          lmargin1=10, lmargin2=10)
         txt.tag_configure("dim", foreground="#6e7681")
-        txt.tag_configure("warn", foreground="#f59e0b")
+        txt.tag_configure("body", font=("Consolas", 9), foreground="#c9d1d9")
 
-        def h1(s): txt.insert(tk.END, s + "\n", "h1")
-        def h2(s): txt.insert(tk.END, "\n" + s + "\n", "h2")
-        def h3(s): txt.insert(tk.END, "\n" + s + "\n", "h3")
-        def p(s): txt.insert(tk.END, s + "\n")
-        def key(s): txt.insert(tk.END, s, "key")
-        def dim(s): txt.insert(tk.END, s + "\n", "dim")
-        def nl(): txt.insert(tk.END, "\n")
+        # Find README.md
+        readme_path = None
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        for candidate in [
+            os.path.join(script_dir, "README.md"),
+            os.path.join(os.getcwd(), "README.md"),
+        ]:
+            if os.path.exists(candidate):
+                readme_path = candidate
+                break
 
-        h1("MARS — Robot Arm Simulation")
-        p("Keyboard-controlled 6DOF robot arm simulator with")
-        p("block physics, IK macros, and 4 auto-camera algorithms.")
+        if not readme_path:
+            txt.insert(tk.END, "README.md not found.\n\n", "h2")
+            txt.insert(tk.END, f"Looked in:\n  {script_dir}\n  {os.getcwd()}\n", "dim")
+            txt.insert(tk.END, "\nPlace README.md next to main.py.", "body")
+            txt.config(state=tk.DISABLED)
+            tk.Button(hw, text="Close", font=("Consolas", 10, "bold"),
+                      bg="#333", fg="white", relief=tk.FLAT, padx=20, pady=4,
+                      command=hw.destroy).pack(pady=(0, 10))
+            return
 
-        h2("═══ KEYBOARD CONTROLS ═══")
-        nl()
-        p("Hold keys for continuous movement:")
-        nl()
-        key("  A / D"); p("  →  J1 Base Rotation (left/right)")
-        key("  W / S"); p("  →  J2 Shoulder (up/down)")
-        key("  Q / E"); p("  →  J3 Elbow (bend/extend)")
-        key("  R / F"); p("  →  J4 Wrist Pitch (tilt up/down)")
-        key("  T / G"); p("  →  J5 Wrist Rotation (roll)")
-        key("  Z / X"); p("  →  J6 Claw (close/open)")
-        nl()
-        key("  H"); p("       →  Home position (uses home offsets)")
-        key("  B"); p("       →  Spawn a new block")
-        key("  V"); p("       →  Cycle camera mode")
-        key("  Shift+L"); p("  →  Lock/unlock view")
-        key("  1-4"); p("     →  Macro pickup (Red/Blue/Green/Yellow)")
-        key("  Esc"); p("     →  Quit")
+        with open(readme_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
 
-        h2("═══ CAMERA MODES (press V to cycle) ═══")
-        nl()
-        p("All auto modes smoothly track the arm. The button in the")
-        p("view bar shows the current mode. Click or press V to cycle:")
-        nl()
-        p("  MANUAL → PCA → NORM → LINEAR → UNNORM → MANUAL...")
+        # Simple markdown renderer
+        in_code_block = False
+        i = 0
+        while i < len(lines):
+            line = lines[i].rstrip("\n")
 
-        h3("MANUAL")
-        p("No auto-tracking. Drag the 3D view to orbit freely.")
-        p("Use view preset buttons (Front/Back/etc) for quick angles.")
-        dim("Best for: precise manual inspection, presentations")
+            # Code block toggle
+            if line.startswith("```"):
+                in_code_block = not in_code_block
+                if in_code_block:
+                    txt.insert(tk.END, "\n")
+                else:
+                    txt.insert(tk.END, "\n")
+                i += 1
+                continue
 
-        h3("PCA — Position Covariance Analysis")
-        p("Builds covariance matrix from joint POSITIONS, finds the")
-        p("direction of least spatial spread, points camera there.")
-        p("Maximizes how spread-out joint dots appear on screen.")
-        nl()
-        p("  Matrix: Cov = Σ (pᵢ - centroid)(pᵢ - centroid)ᵀ / n")
-        p("  Camera: along minimum eigenvector")
-        nl()
-        p("Implicitly weights longer links more because they push")
-        p("joints farther apart in the covariance calculation.")
-        nl()
-        dim("Best for: arm extended, reaching for blocks, general")
-        dim("operation. Shows WHERE the claw is in the workspace.")
-        dim("The default choice for pick-and-place tasks.")
+            if in_code_block:
+                txt.insert(tk.END, line + "\n", "codeblock")
+                i += 1
+                continue
 
-        h3("NORM — Normalized Orthogonality")
-        p("Builds scatter matrix from UNIT direction vectors of each")
-        p("link. Every link gets equal vote regardless of length.")
-        p("Finds the camera angle most perpendicular to all links.")
-        nl()
-        p("  Matrix: M = Σ d̂ᵢd̂ᵢᵀ   (unit vectors)")
-        p("  Camera: along minimum eigenvector")
-        nl()
-        p("A 15mm base link has the same influence as the 105mm")
-        p("upper arm. Pure directional diversity analysis.")
-        nl()
-        dim("Best for: debugging joint configurations, folded/compact")
-        dim("poses where PCA sees a blob. Every joint bend is visible")
-        dim("regardless of how short that link segment is.")
+            # Horizontal rule
+            if line.strip() in ("---", "***", "___"):
+                txt.insert(tk.END, "─" * 60 + "\n", "hr")
+                i += 1
+                continue
 
-        h3("LINEAR — Length-Weighted Orthogonality")
-        p("Same as NORM but each link's vote is weighted by its")
-        p("length. Longer links matter more, short links less.")
-        nl()
-        p("  Matrix: M = Σ Lᵢ · d̂ᵢd̂ᵢᵀ   (length weighted)")
-        p("  Camera: along minimum eigenvector")
-        nl()
-        p("Hybrid approach: keeps the directional framework of")
-        p("orthogonality but adds importance scaling. The 105mm")
-        p("upper arm gets 7× more vote than the 15mm base.")
-        nl()
-        dim("Best for: balanced view — important links dominate")
-        dim("but small links still contribute. Good all-rounder")
-        dim("when you want both spatial awareness and joint detail.")
+            # Headers
+            if line.startswith("#### "):
+                txt.insert(tk.END, line[5:] + "\n", "h4")
+                i += 1
+                continue
+            if line.startswith("### "):
+                txt.insert(tk.END, line[4:] + "\n", "h3")
+                i += 1
+                continue
+            if line.startswith("## "):
+                txt.insert(tk.END, line[3:] + "\n", "h2")
+                i += 1
+                continue
+            if line.startswith("# "):
+                txt.insert(tk.END, line[2:] + "\n", "h1")
+                i += 1
+                continue
 
-        h3("UNNORM — Unnormalized (Length² Weighted)")
-        p("Uses raw link vectors without normalizing. Equivalent")
-        p("to L²-weighting the unit direction scatter matrix.")
-        nl()
-        p("  Matrix: M = Σ dᵢdᵢᵀ = Σ Lᵢ² · d̂ᵢd̂ᵢᵀ")
-        p("  Camera: along minimum eigenvector")
-        nl()
-        p("The 105mm upper arm gets 49× more vote than the 15mm")
-        p("base. Essentially 'point camera perpendicular to the")
-        p("longest link and mostly ignore everything else.'")
-        nl()
-        dim("Best for: when one link dominates the visual (e.g. the")
-        dim("arm is mostly straight with one long segment). Rarely")
-        dim("the best general choice but useful to compare against.")
+            # Table rows
+            if "|" in line and line.strip().startswith("|"):
+                cells = [c.strip() for c in line.strip().strip("|").split("|")]
+                # Skip separator rows (|---|---|)
+                if all(set(c.strip()) <= set("-: ") for c in cells):
+                    i += 1
+                    continue
+                # Check if header row (next line is separator)
+                is_header = False
+                if i + 1 < len(lines):
+                    next_l = lines[i+1].strip()
+                    if "|" in next_l:
+                        next_cells = [c.strip() for c in next_l.strip().strip("|").split("|")]
+                        if all(set(c.strip()) <= set("-: ") for c in next_cells):
+                            is_header = True
+                row_text = "  ".join(f"{c:<20s}" if len(c) < 20 else c for c in cells)
+                tag = "tablehead" if is_header else "table"
+                txt.insert(tk.END, row_text + "\n", tag)
+                i += 1
+                continue
 
-        h2("═══ WHEN TO USE EACH MODE ═══")
-        nl()
-        p("┌─────────────────────────────────────────────────────┐")
-        p("│ Scenario                    │ Best Mode             │")
-        p("├─────────────────────────────┼───────────────────────┤")
-        p("│ Reaching for a block        │ PCA                   │")
-        p("│ Picking up / placing        │ PCA or LINEAR         │")
-        p("│ Arm folded, debugging       │ NORM                  │")
-        p("│ Checking specific joint     │ NORM or MANUAL        │")
-        p("│ General operation           │ LINEAR                │")
-        p("│ Presentation / demo         │ MANUAL + presets       │")
-        p("│ Comparing algorithms        │ Press V repeatedly    │")
-        p("└─────────────────────────────┴───────────────────────┘")
+            # Empty line
+            if not line.strip():
+                txt.insert(tk.END, "\n")
+                i += 1
+                continue
 
-        h2("═══ GUI CONTROLS ═══")
-        nl()
-        h3("View Bar (below 3D view)")
-        p("Front/Back/Left/Right/Top/Iso — preset angles (locks view)")
-        p("Mode button — shows current auto-camera mode, click to cycle")
-        p("LOCK — freezes the view completely (no rotation, no tracking)")
-
-        h3("Right Panel (scrollable)")
-        p("Home button — sends arm to home position")
-        p("Claw Move — click in 3D view to IK-solve arm to that point")
-        p("Key Speed slider — degrees per tick for held keys (0.5–10)")
-        p("Home Offset dials — set custom home angles for each joint")
-        p("Platform slider — raise/lower the arm base (0–400mm)")
-        p("Servo sliders — direct joint angle control")
-        p("Macro buttons — auto pickup colored blocks")
-
-        h3("Blocks")
-        p("Blocks spawn on the ground near the arm. The claw can")
-        p("grab blocks when closed near them. Open the claw to")
-        p("release/throw. Blocks have gravity, bounce, and friction.")
-
-        h3("Claw Move Mode")
-        p("Click 'Claw Move: ON' then click in the 3D view.")
-        p("The arm IK-solves to that ground position instantly.")
-        p("Useful for quickly positioning the arm near a block.")
-
-        h2("═══ PRESET MOTIONS ═══")
-        nl()
-        p("Animated motion sequences. Click any button to play.")
-        p("Click 'Stop Motion' or start another to interrupt.")
-        nl()
-        h3("Gestures (no blocks needed)")
-        key("  Wave  "); p("  Arm swings left-right, waving hello")
-        key("  Bow   "); p("  Polite bow — arm dips forward and holds")
-        key("  Nod   "); p("  Wrist nods up/down repeatedly (yes)")
-        key("  Shake "); p("  Wrist rolls side-to-side (no)")
-        key("  Spin  "); p("  Base rotates 360° with arm extended")
-        key("  Flex  "); p("  Curls and extends like flexing a muscle")
-        nl()
-        h3("Block Tricks (need blocks spawned)")
-        key("  Block Wave "); p(" Pick up nearest block, wave it, put back")
-        key("  Toss       "); p(" Pick up block, wind up, throw forward")
-        key("  Stack      "); p(" Pick up first block, stack on second")
-        nl()
-        dim("Block tricks auto-select the nearest available block.")
-        dim("Stack needs at least 2 blocks. Spawn more with B key.")
-
-        h2("═══ THEORY ═══")
-        nl()
-        p("All four auto-camera modes find an optimal viewing angle")
-        p("by eigendecomposing a 3×3 scatter matrix. The camera")
-        p("points along the minimum eigenvector — the direction")
-        p("where collapsing the 3D scene to 2D loses the least")
-        p("information.")
-        nl()
-        p("PCA and NORM are analogous to cosine similarity vs")
-        p("euclidean distance: PCA cares about positions (where"),
-        p("joints are), NORM cares about directions (which way")
-        p("links point). LINEAR and UNNORM interpolate between")
-        p("them with different weighting strengths.")
+            # Regular text with inline formatting
+            self._render_inline(txt, line)
+            txt.insert(tk.END, "\n")
+            i += 1
 
         txt.config(state=tk.DISABLED)
 
@@ -1306,6 +1248,18 @@ class App:
         tk.Button(hw, text="Close", font=("Consolas", 10, "bold"),
                   bg="#333", fg="white", relief=tk.FLAT, padx=20, pady=4,
                   command=hw.destroy).pack(pady=(0, 10))
+
+    def _render_inline(self, txt, line):
+        """Render a line with inline markdown: **bold**, `code`, regular text."""
+        import re
+        parts = re.split(r'(\*\*[^*]+\*\*|`[^`]+`)', line)
+        for part in parts:
+            if part.startswith("**") and part.endswith("**"):
+                txt.insert(tk.END, part[2:-2], "bold")
+            elif part.startswith("`") and part.endswith("`"):
+                txt.insert(tk.END, part[1:-1], "code")
+            else:
+                txt.insert(tk.END, part, "body")
 
     def close(self):
         self.root.destroy()
@@ -1343,35 +1297,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

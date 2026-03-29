@@ -6,7 +6,7 @@
   <component name="ChangeListManager">
     <list default="true" id="69392778-304b-4477-9a04-cdd08c86e189" name="Changes" comment="updated functionality">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/main.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -68,7 +68,7 @@
       <updated>1774741691287</updated>
       <workItem from="1774741692608" duration="7325000" />
       <workItem from="1774798301737" duration="2516000" />
-      <workItem from="1774801141027" duration="1235000" />
+      <workItem from="1774801141027" duration="2366000" />
     </task>
     <task id="LOCAL-00001" summary="updated functionality">
       <option name="closed" value="true" />
@@ -174,7 +174,23 @@
       <option name="project" value="LOCAL" />
       <updated>1774801300980</updated>
     </task>
-    <option name="localTasksCounter" value="14" />
+    <task id="LOCAL-00014" summary="updated functionality">
+      <option name="closed" value="true" />
+      <created>1774802471501</created>
+      <option name="number" value="00014" />
+      <option name="presentableId" value="LOCAL-00014" />
+      <option name="project" value="LOCAL" />
+      <updated>1774802471501</updated>
+    </task>
+    <task id="LOCAL-00015" summary="updated functionality">
+      <option name="closed" value="true" />
+      <created>1774802722956</created>
+      <option name="number" value="00015" />
+      <option name="presentableId" value="LOCAL-00015" />
+      <option name="project" value="LOCAL" />
+      <updated>1774802722956</updated>
+    </task>
+    <option name="localTasksCounter" value="16" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -185,6 +201,6 @@
     <option name="LAST_COMMIT_MESSAGE" value="updated functionality" />
   </component>
   <component name="com.intellij.coverage.CoverageDataManagerImpl">
-    <SUITE FILE_PATH="coverage/armdemo$main.coverage" NAME="main Coverage Results" MODIFIED="1774801268549" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
+    <SUITE FILE_PATH="coverage/armdemo$main.coverage" NAME="main Coverage Results" MODIFIED="1774803604237" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
   </component>
 </project>
