@@ -105,28 +105,191 @@ class MacroEngine:
         self.arm = arm; self.phys = physics
         self.active = False; self._steps = []; self._si = 0
         self._tgt = {}; self._st = {}; self._t = 0.; self._dur = 0.
+        self._loop_start = -1; self._loop_count = 0; self._loops_left = 0
+
+    def _run(self, steps, msg="Macro"):
+        """Start a sequence of steps. Each step is (kind, param, duration).
+        Kinds: 'open', 'close', 'move' (IK pos), 'angles' (dict of angles),
+               'loop_start' (begin loop, param=count), 'loop_end'."""
+        self._steps = steps; self._si = 0
+        self.active = True; self._t = 0.
+        self._loop_start = -1; self._loops_left = 0
+        self._begin()
+        return msg
 
     def start_pickup(self, color):
         b = self.phys.find_by_color(color)
         if not b: return f"No '{color}' block"
         bp = b.pos.copy()
-        self._steps = [("open",None,.3),("move",bp+[0,80,0],.8),
-                       ("move",bp+[0,10,0],.5),("close",None,.3),
-                       ("move",bp+[0,120,0],.6)]
-        self._si = 0; self.active = True; self._t = 0.; self._begin()
-        return f"Picking up {b.label}..."
+        return self._run([
+            ("open",None,.3), ("move",bp+[0,80,0],.8),
+            ("move",bp+[0,10,0],.5), ("close",None,.3),
+            ("move",bp+[0,120,0],.6)
+        ], f"Picking up {b.label}...")
+
+    def start_stack(self, color1, color2):
+        """Pick up color1 and stack it on top of color2."""
+        b1 = self.phys.find_by_color(color1)
+        b2 = self.phys.find_by_color(color2)
+        if not b1: return f"No '{color1}' block"
+        if not b2: return f"No '{color2}' block"
+        p1 = b1.pos.copy(); p2 = b2.pos.copy()
+        stack_h = b2.size * 2 + 15  # on top of b2
+        return self._run([
+            ("open",None,.2), ("move",p1+[0,80,0],.7),
+            ("move",p1+[0,10,0],.4), ("close",None,.3),
+            ("move",p1+[0,120,0],.5),
+            ("move",p2+[0,stack_h+60,0],.7),
+            ("move",p2+[0,stack_h,0],.4),
+            ("open",None,.3), ("move",p2+[0,120,0],.5),
+        ], f"Stacking {b1.label} on {b2.label}...")
+
+    def start_wave(self):
+        """Wave the arm back and forth."""
+        home = {j: self.arm.angles[j] for j in self.arm.JOINTS}
+        return self._run([
+            ("angles", dict(home, J2=20, J3=40, J4=0, J6=73), .6),
+            ("loop_start", 3, 0),
+            ("angles", dict(home, J1=40, J2=20, J3=40, J4=30, J6=73), .35),
+            ("angles", dict(home, J1=-40, J2=20, J3=40, J4=-30, J6=73), .35),
+            ("loop_end", None, 0),
+            ("angles", dict(home, J1=0, J2=20, J3=40, J4=0, J6=73), .3),
+            ("angles", home, .5),
+        ], "Waving...")
+
+    def start_bow(self):
+        """Polite bow gesture."""
+        home = {j: self.arm.angles[j] for j in self.arm.JOINTS}
+        return self._run([
+            ("angles", dict(home, J2=30, J3=60), .5),
+            ("angles", dict(home, J2=100, J3=130, J4=40), .7),
+            ("angles", dict(home, J2=100, J3=130, J4=40), .6),  # hold
+            ("angles", dict(home, J2=30, J3=60), .5),
+            ("angles", home, .5),
+        ], "Bowing...")
+
+    def start_spin_show(self):
+        """Spin the base 360° with arm extended, showing off reach."""
+        home = {j: self.arm.angles[j] for j in self.arm.JOINTS}
+        return self._run([
+            ("angles", dict(home, J2=50, J3=80, J4=10, J6=10), .6),
+            ("angles", dict(home, J1=90, J2=50, J3=80, J4=10, J6=10), .8),
+            ("angles", dict(home, J1=-90, J2=50, J3=80, J4=10, J6=10), 1.6),
+            ("angles", dict(home, J1=0, J2=50, J3=80, J4=10, J6=10), .8),
+            ("open", None, .3),
+            ("angles", home, .5),
+        ], "Spin show...")
+
+    def start_flex(self):
+        """Curl and extend like flexing a muscle."""
+        home = {j: self.arm.angles[j] for j in self.arm.JOINTS}
+        return self._run([
+            ("angles", dict(home, J2=10, J3=40, J6=10), .5),
+            ("loop_start", 2, 0),
+            ("angles", dict(home, J2=90, J3=140, J4=60, J6=10), .4),
+            ("angles", dict(home, J2=10, J3=40, J4=-20, J6=10), .4),
+            ("loop_end", None, 0),
+            ("angles", dict(home, J2=10, J3=40, J6=73), .3),
+            ("angles", home, .5),
+        ], "Flexing...")
+
+    def start_nod_yes(self):
+        """Nod the wrist up and down (yes gesture)."""
+        home = {j: self.arm.angles[j] for j in self.arm.JOINTS}
+        return self._run([
+            ("angles", dict(home, J2=30, J3=50), .4),
+            ("loop_start", 3, 0),
+            ("angles", dict(home, J2=30, J3=50, J4=40), .2),
+            ("angles", dict(home, J2=30, J3=50, J4=-20), .2),
+            ("loop_end", None, 0),
+            ("angles", dict(home, J2=30, J3=50, J4=0), .2),
+            ("angles", home, .5),
+        ], "Nodding yes...")
+
+    def start_shake_no(self):
+        """Shake the wrist side to side (no gesture) using J5 rotation."""
+        home = {j: self.arm.angles[j] for j in self.arm.JOINTS}
+        return self._run([
+            ("angles", dict(home, J2=20, J3=45), .4),
+            ("loop_start", 3, 0),
+            ("angles", dict(home, J2=20, J3=45, J5=60), .2),
+            ("angles", dict(home, J2=20, J3=45, J5=-60), .2),
+            ("loop_end", None, 0),
+            ("angles", dict(home, J2=20, J3=45, J5=0), .2),
+            ("angles", home, .5),
+        ], "Shaking no...")
+
+    def start_pickup_wave(self, color):
+        """Pick up a block, wave it around, then place it back."""
+        b = self.phys.find_by_color(color)
+        if not b: return f"No '{color}' block"
+        bp = b.pos.copy()
+        return self._run([
+            ("open",None,.2), ("move",bp+[0,80,0],.6),
+            ("move",bp+[0,10,0],.4), ("close",None,.3),
+            ("move",bp+[0,120,0],.5),
+            # Wave with block
+            ("loop_start", 2, 0),
+            ("angles", {"J1":50,"J2":30,"J3":50,"J4":20,"J5":0,"J6":10}, .35),
+            ("angles", {"J1":-50,"J2":30,"J3":50,"J4":-20,"J5":0,"J6":10}, .35),
+            ("loop_end", None, 0),
+            ("angles", {"J1":0,"J2":30,"J3":50,"J4":0,"J5":0,"J6":10}, .3),
+            # Place back
+            ("move",bp+[0,80,0],.6),
+            ("move",bp+[0,15,0],.4),
+            ("open",None,.3), ("move",bp+[0,100,0],.4),
+        ], f"Wave with {b.label}...")
+
+    def start_toss(self, color):
+        """Pick up a block and toss it forward."""
+        b = self.phys.find_by_color(color)
+        if not b: return f"No '{color}' block"
+        bp = b.pos.copy()
+        return self._run([
+            ("open",None,.2), ("move",bp+[0,80,0],.5),
+            ("move",bp+[0,10,0],.3), ("close",None,.25),
+            ("move",bp+[0,80,0],.3),
+            # Wind up
+            ("angles", {"J1":0,"J2":80,"J3":130,"J4":50,"J5":0,"J6":10}, .4),
+            # Throw! (fast forward swing + open claw)
+            ("angles", {"J1":0,"J2":20,"J3":50,"J4":-30,"J5":0,"J6":73}, .15),
+            # Follow through
+            ("angles", {"J1":0,"J2":10,"J3":40,"J4":-40,"J5":0,"J6":73}, .3),
+        ], f"Tossing {b.label}!")
 
     def _begin(self):
-        if self._si >= len(self._steps): self.active = False; return
+        if self._si >= len(self._steps):
+            self.active = False; return
         k, p, d = self._steps[self._si]
+
+        # Loop control
+        if k == "loop_start":
+            self._loop_start = self._si
+            self._loops_left = p  # number of iterations
+            self._si += 1; self._begin(); return
+        if k == "loop_end":
+            self._loops_left -= 1
+            if self._loops_left > 0:
+                self._si = self._loop_start + 1  # jump back after loop_start
+            else:
+                self._si += 1
+            self._begin(); return
+
         self._dur = d; self._t = 0.
         self._st = {j: self.arm.angles[j] for j in self.arm.JOINTS}
-        if k == "open": self._tgt = dict(self._st); self._tgt["J6"] = 73.
-        elif k == "close": self._tgt = dict(self._st); self._tgt["J6"] = 10.
+
+        if k == "open":
+            self._tgt = dict(self._st); self._tgt["J6"] = 73.
+        elif k == "close":
+            self._tgt = dict(self._st); self._tgt["J6"] = 10.
         elif k == "move" and p is not None:
             ik = self.arm.solve_angles_for_position(p)
             self._tgt = ik if ik else dict(self._st)
-        else: self._tgt = dict(self._st)
+        elif k == "angles" and isinstance(p, dict):
+            self._tgt = dict(self._st)
+            self._tgt.update(p)
+        else:
+            self._tgt = dict(self._st)
 
     def update(self, dt):
         if not self.active: return False
@@ -370,7 +533,7 @@ class App:
             self.sliders[jn] = sc
 
         # ── Macros + blocks ──────────────────────────────────────────
-        mf = ttk.LabelFrame(rf, text=" Macros ", style="D.TLabelframe")
+        mf = ttk.LabelFrame(rf, text=" Pickup Macros ", style="D.TLabelframe")
         mf.pack(fill=tk.X, pady=2)
         mr = ttk.Frame(mf, style="D.TFrame"); mr.pack(fill=tk.X, padx=3, pady=1)
         for i,(col,nm) in enumerate([("#ef4444","Red"),("#3b82f6","Blue"),
@@ -383,6 +546,50 @@ class App:
         mr.columnconfigure(2,weight=1); mr.columnconfigure(3,weight=1)
         btn(mf, "Spawn (B)", "#3a2d3a", self._spawn_block)
         btn(mf, "Clear", "#3a2d2d", self._clear_blocks)
+
+        # ── Preset Motions ───────────────────────────────────────────
+        motf = ttk.LabelFrame(rf, text=" Motions ", style="D.TLabelframe")
+        motf.pack(fill=tk.X, pady=2)
+
+        # Gestures row
+        gr = ttk.Frame(motf, style="D.TFrame"); gr.pack(fill=tk.X, padx=3, pady=1)
+        for i,(nm,cmd,col) in enumerate([
+            ("Wave", lambda: self._run_motion("wave"), "#2563eb"),
+            ("Bow", lambda: self._run_motion("bow"), "#7c3aed"),
+            ("Nod", lambda: self._run_motion("nod"), "#0891b2"),
+            ("Shake", lambda: self._run_motion("shake"), "#b45309"),
+        ]):
+            tk.Button(gr, text=nm, font=("Consolas",7,"bold"), bg=col, fg="white",
+                      relief=tk.FLAT, padx=2, pady=0, width=4,
+                      command=cmd).grid(row=0, column=i, sticky="ew", padx=1)
+        gr.columnconfigure(0,weight=1); gr.columnconfigure(1,weight=1)
+        gr.columnconfigure(2,weight=1); gr.columnconfigure(3,weight=1)
+
+        # Tricks row
+        tr = ttk.Frame(motf, style="D.TFrame"); tr.pack(fill=tk.X, padx=3, pady=1)
+        for i,(nm,cmd,col) in enumerate([
+            ("Spin", lambda: self._run_motion("spin"), "#dc2626"),
+            ("Flex", lambda: self._run_motion("flex"), "#16a34a"),
+        ]):
+            tk.Button(tr, text=nm, font=("Consolas",7,"bold"), bg=col, fg="white",
+                      relief=tk.FLAT, padx=2, pady=0, width=4,
+                      command=cmd).grid(row=0, column=i, sticky="ew", padx=1)
+        tr.columnconfigure(0,weight=1); tr.columnconfigure(1,weight=1)
+
+        # Block tricks row
+        btr = ttk.Frame(motf, style="D.TFrame"); btr.pack(fill=tk.X, padx=3, pady=1)
+        ttk.Label(btr, text="Block:", style="D.TLabel",
+                  font=("Consolas",7)).pack(side=tk.LEFT, padx=2)
+        for nm,cmd,col in [
+            ("Wave", lambda: self._run_motion("block_wave"), "#d97706"),
+            ("Toss", lambda: self._run_motion("toss"), "#e11d48"),
+            ("Stack", lambda: self._run_motion("stack"), "#059669"),
+        ]:
+            tk.Button(btr, text=nm, font=("Consolas",7,"bold"), bg=col, fg="white",
+                      relief=tk.FLAT, padx=2, pady=0, width=4,
+                      command=cmd).pack(side=tk.LEFT, padx=1)
+
+        btn(motf, "Stop Motion", "#5c1a1a", self._stop_motion)
 
         # ── Active keys display ──────────────────────────────────────
         self.keys_lbl = ttk.Label(rf, text="Keys: -", style="D.TLabel",
@@ -838,6 +1045,45 @@ class App:
         if self.macro.active: self.macro.cancel()
         self._log(self.macro.start_pickup(color))
 
+    def _run_motion(self, name):
+        """Dispatch preset motions."""
+        if self.macro.active: self.macro.cancel()
+        if name == "wave":
+            self._log(self.macro.start_wave())
+        elif name == "bow":
+            self._log(self.macro.start_bow())
+        elif name == "nod":
+            self._log(self.macro.start_nod_yes())
+        elif name == "shake":
+            self._log(self.macro.start_shake_no())
+        elif name == "spin":
+            self._log(self.macro.start_spin_show())
+        elif name == "flex":
+            self._log(self.macro.start_flex())
+        elif name == "block_wave":
+            # Find first available block
+            for b in self.physics.blocks:
+                if not b.grabbed:
+                    self._log(self.macro.start_pickup_wave(b.label))
+                    return
+            self._log("No blocks available")
+        elif name == "toss":
+            for b in self.physics.blocks:
+                if not b.grabbed:
+                    self._log(self.macro.start_toss(b.label))
+                    return
+            self._log("No blocks available")
+        elif name == "stack":
+            ungrabbed = [b for b in self.physics.blocks if not b.grabbed]
+            if len(ungrabbed) >= 2:
+                self._log(self.macro.start_stack(ungrabbed[0].label, ungrabbed[1].label))
+            else:
+                self._log("Need 2+ blocks to stack")
+
+    def _stop_motion(self):
+        self.macro.cancel()
+        self._log("Motion stopped")
+
     def _log(self, msg):
         line = f"[{time.strftime('%H:%M:%S')}] {msg}"; print(line)
         try:
@@ -1018,6 +1264,27 @@ class App:
         p("Click 'Claw Move: ON' then click in the 3D view.")
         p("The arm IK-solves to that ground position instantly.")
         p("Useful for quickly positioning the arm near a block.")
+
+        h2("═══ PRESET MOTIONS ═══")
+        nl()
+        p("Animated motion sequences. Click any button to play.")
+        p("Click 'Stop Motion' or start another to interrupt.")
+        nl()
+        h3("Gestures (no blocks needed)")
+        key("  Wave  "); p("  Arm swings left-right, waving hello")
+        key("  Bow   "); p("  Polite bow — arm dips forward and holds")
+        key("  Nod   "); p("  Wrist nods up/down repeatedly (yes)")
+        key("  Shake "); p("  Wrist rolls side-to-side (no)")
+        key("  Spin  "); p("  Base rotates 360° with arm extended")
+        key("  Flex  "); p("  Curls and extends like flexing a muscle")
+        nl()
+        h3("Block Tricks (need blocks spawned)")
+        key("  Block Wave "); p(" Pick up nearest block, wave it, put back")
+        key("  Toss       "); p(" Pick up block, wind up, throw forward")
+        key("  Stack      "); p(" Pick up first block, stack on second")
+        nl()
+        dim("Block tricks auto-select the nearest available block.")
+        dim("Stack needs at least 2 blocks. Spawn more with B key.")
 
         h2("═══ THEORY ═══")
         nl()
