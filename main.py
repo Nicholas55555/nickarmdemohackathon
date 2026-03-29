@@ -19,6 +19,7 @@ matplotlib.use("TkAgg")
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+from mpl_toolkits.mplot3d import proj3d
 
 from config import (SERVO, HOME, CAM_INDEX, CAM_W, CAM_H,
     J1_J2, J2_J3, J3_J4, J4_J5, J5_J6, CLAW,
@@ -256,53 +257,44 @@ class App:
 
         # RIGHT — controls (scrollable)
         scroll_container = ttk.Frame(body, style="D.TFrame")
-        scroll_container.grid(row=0, column=2, sticky="nsew", padx=(3, 0))
+        scroll_container.grid(row=0, column=2, sticky="nsew", padx=(3,0))
         scroll_container.rowconfigure(0, weight=1)
         scroll_container.columnconfigure(0, weight=1)
-
         rf_canvas = tk.Canvas(scroll_container, bg=BG, highlightthickness=0)
         rf_canvas.grid(row=0, column=0, sticky="nsew")
-
-        rf_scrollbar = ttk.Scrollbar(scroll_container, orient="vertical", command=rf_canvas.yview)
+        rf_scrollbar = ttk.Scrollbar(scroll_container, orient="vertical",
+                                      command=rf_canvas.yview)
         rf_scrollbar.grid(row=0, column=1, sticky="ns")
         rf_canvas.configure(yscrollcommand=rf_scrollbar.set)
-
-        # The actual frame that will hold all your controls
         rf = ttk.Frame(rf_canvas, style="D.TFrame")
         rf_window = rf_canvas.create_window((0, 0), window=rf, anchor="nw")
-
-        # 1. Update the canvas scroll region whenever the inner frame's height changes
-        rf.bind("<Configure>", lambda e: rf_canvas.configure(scrollregion=rf_canvas.bbox("all")))
-
-        # 2. Force the inner frame to expand and match the canvas's width
-        rf_canvas.bind("<Configure>", lambda e: rf_canvas.itemconfigure(rf_window, width=e.width))
-
-        # 3. Cross-platform mouse wheel scrolling (only active when hovering over the panel)
+        rf.bind("<Configure>",
+                lambda e: rf_canvas.configure(scrollregion=rf_canvas.bbox("all")))
+        rf_canvas.bind("<Configure>",
+                       lambda e: rf_canvas.itemconfigure(rf_window, width=e.width))
         def _on_mousewheel(event):
             if sys.platform == "win32":
                 rf_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-            else:  # macOS / generic
+            else:
                 rf_canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
-
         def _bind_scroll(e):
             rf_canvas.bind_all("<MouseWheel>", _on_mousewheel)
-            rf_canvas.bind_all("<Button-4>", lambda e: rf_canvas.yview_scroll(-1, "units"))  # Linux up
-            rf_canvas.bind_all("<Button-5>", lambda e: rf_canvas.yview_scroll(1, "units"))  # Linux down
-
+            rf_canvas.bind_all("<Button-4>",
+                               lambda e: rf_canvas.yview_scroll(-1, "units"))
+            rf_canvas.bind_all("<Button-5>",
+                               lambda e: rf_canvas.yview_scroll(1, "units"))
         def _unbind_scroll(e):
             rf_canvas.unbind_all("<MouseWheel>")
             rf_canvas.unbind_all("<Button-4>")
             rf_canvas.unbind_all("<Button-5>")
-
         scroll_container.bind("<Enter>", _bind_scroll)
         scroll_container.bind("<Leave>", _unbind_scroll)
 
         def btn(p, t, bg_c, cmd, **kw):
-            b = tk.Button(p, text=t, font=("Consolas", 8, "bold"), bg=bg_c,
+            b = tk.Button(p, text=t, font=("Consolas",8,"bold"), bg=bg_c,
                           fg="white", activebackground="#444", relief=tk.FLAT,
                           padx=4, pady=1, command=cmd, **kw)
-            b.pack(fill=tk.X, padx=3, pady=1);
-            return b
+            b.pack(fill=tk.X, padx=3, pady=1); return b
 
         bf = ttk.LabelFrame(rf, text=" Controls ", style="D.TLabelframe")
         bf.pack(fill=tk.X, pady=(0,2))
@@ -339,12 +331,11 @@ class App:
             d.pack(padx=1)
             self._home_dials[jn] = d
 
-        # ── Forearm Sensitivity ──────────────────────────────────────
+        # ── Forearm Sensitivity (rotations only) ─────────────────────
         fsf = ttk.LabelFrame(rf, text=" Forearm Sens. ", style="D.TLabelframe")
         fsf.pack(fill=tk.X, pady=2)
         self._sens_sliders = {}
-        for jn, lbl, default in [("J1", "J1 Base", 30), ("J2", "J2 Shldr", 30),
-                                  ("J4", "J4 Wrist", 30), ("J5", "J5 Roll", 30)]:
+        for jn, lbl, default in [("J1", "J1 Base", 70), ("J5", "J5 Roll", 70)]:
             r = ttk.Frame(fsf, style="D.TFrame")
             r.pack(fill=tk.X, padx=4, pady=1)
             ttk.Label(r, text=f"{lbl}:", width=8, style="D.TLabel",
@@ -360,10 +351,10 @@ class App:
             sc.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=1)
             self._sens_sliders[jn] = sc
 
-        # ── Finger Sensitivity ───────────────────────────────────────
+        # ── Finger Sensitivity (joint tracking) ──────────────────────
         fgf = ttk.LabelFrame(rf, text=" Finger Sens. ", style="D.TLabelframe")
         fgf.pack(fill=tk.X, pady=2)
-        for key, lbl, default in [("left", "L-Hand", 50), ("right", "R-Hand", 50)]:
+        for key, lbl, default in [("left", "L J2/J3", 50), ("right", "R J4", 50)]:
             r = ttk.Frame(fgf, style="D.TFrame")
             r.pack(fill=tk.X, padx=4, pady=1)
             ttk.Label(r, text=f"{lbl}:", width=8, style="D.TLabel",
@@ -429,11 +420,11 @@ class App:
 
         # ── Log ──────────────────────────────────────────────────────
         logf = ttk.LabelFrame(rf, text=" Log ", style="D.TLabelframe")
-        logf.pack(fill=tk.BOTH, expand=True, pady=(2,0))
+        logf.pack(fill=tk.X, pady=(2,0))
         self.log_w = tk.Text(logf, bg="#0d1117", fg="#58a6ff",
-                             font=("Consolas",7), height=3, width=20,
+                             font=("Consolas",7), height=5, width=20,
                              wrap=tk.WORD, state=tk.DISABLED, relief=tk.FLAT)
-        self.log_w.pack(fill=tk.BOTH, expand=True, padx=3, pady=3)
+        self.log_w.pack(fill=tk.X, padx=3, pady=3)
 
     # ══════════════════════════════════════════════════════════════════
     # 3D INIT & MOUSE DRAG
@@ -461,27 +452,57 @@ class App:
             except: pass
             self._mpl_rotation_disabled = False
 
+    def _screen_to_ground(self, event):
+        """Project a screen click onto the ground plane via 3D projection."""
+        if event.x is None or event.y is None:
+            return None
+        ax = self.ax
+        M = ax.get_proj()
+        ph = self.arm.platform_h
+        best_dist = float('inf')
+        best_x = best_z = 0.0
+        for gx in np.linspace(-250, 250, 26):
+            for gz in np.linspace(-250, 250, 26):
+                x2, y2, _ = proj3d.proj_transform(gx, gz, ph, M)
+                dx, dy = ax.transData.transform((x2, y2))
+                d = (dx - event.x)**2 + (dy - event.y)**2
+                if d < best_dist:
+                    best_dist = d; best_x, best_z = gx, gz
+        for gx in np.linspace(best_x-20, best_x+20, 21):
+            for gz in np.linspace(best_z-20, best_z+20, 21):
+                x2, y2, _ = proj3d.proj_transform(gx, gz, ph, M)
+                dx, dy = ax.transData.transform((x2, y2))
+                d = (dx - event.x)**2 + (dy - event.y)**2
+                if d < best_dist:
+                    best_dist = d; best_x, best_z = gx, gz
+        return best_x, best_z
+
     def _on_3d_press(self, event):
         if event.button != 1:
             return
-        # Claw Move mode → click to position arm via IK
-        if self._claw_drag and event.xdata is not None and event.ydata is not None:
-            # event.xdata/ydata are in plot coords (arm_X, arm_Z)
-            # We target a point above the ground at that XZ position
-            target_x = event.xdata   # plot X = arm X
-            target_z = event.ydata   # plot Y = arm Z
-            target_y = 40.0          # hover height above ground (mm)
-            target = np.array([target_x, target_y, target_z])
-            ik = self.arm.solve_angles_for_position(target)
-            if ik:
-                for j, v in ik.items():
-                    self.arm.set_angle(j, v)
-                self.arm.enforce_ground_constraint()
-                self._sync_sliders()
-                self._log(f"Move → X={target_x:.0f} Z={target_z:.0f}")
-            else:
-                self._log("Unreachable")
-            self._draw_arm()
+        # Claw Move mode → IK to clicked ground point
+        if self._claw_drag:
+            result = self._screen_to_ground(event)
+            if result:
+                gx, gz = result
+                # Clamp to arm's workspace radius
+                r = math.sqrt(gx**2 + gz**2)
+                max_r = J2_J3 + J3_J4 - 30  # leave margin
+                if r > max_r and r > 1:
+                    gx *= max_r / r
+                    gz *= max_r / r
+                # Target Y: ground level + block size (gripper pointing down)
+                target = np.array([gx, 25.0, gz])
+                ik = self.arm.solve_angles_for_position(target)
+                if ik:
+                    for j, v in ik.items():
+                        self.arm.set_angle(j, v)
+                    self.arm.enforce_ground_constraint()
+                    self._sync_sliders()
+                    self._log(f"Move → X={gx:.0f} Z={gz:.0f}")
+                else:
+                    self._log("Unreachable")
+                self._draw_arm()
             return
         # Block drag (grabbed block)
         grabbed = [b for b in self.physics.blocks if b.grabbed]

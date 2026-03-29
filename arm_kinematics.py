@@ -57,17 +57,36 @@ class ArmKinematics:
         j6_lo,j6_hi,_=SERVO["J6"]
         t=(self.angles["J6"]-j6_lo)/(j6_hi-j6_lo)
         sr=np.radians(2+t*28)
-        lt=j6p+off(CLAW,cum+sr); rt=j6p+off(CLAW,cum-sr)
+
+        # Arm forward direction at claw base
+        arm_fwd = off(1,cum)
+        arm_fwd_n = arm_fwd / (np.linalg.norm(arm_fwd)+1e-9)
+
+        # Perpendicular to arm in the swing plane (sideways)
+        perp_base = np.array([-np.sin(yaw), 0, np.cos(yaw)])
+
+        # Apply J5 roll: rotate perp around arm_fwd axis
+        # Rodrigues rotation: v_rot = v*cos(r) + (k×v)*sin(r) + k*(k·v)*(1-cos(r))
+        cr = np.cos(roll); srl = np.sin(roll)
+        kxv = np.cross(arm_fwd_n, perp_base)
+        kdv = np.dot(arm_fwd_n, perp_base)
+        perp_rolled = perp_base*cr + kxv*srl + arm_fwd_n*kdv*(1-cr)
+
+        # Finger tips: spread along the ROLLED perpendicular
+        spread = CLAW * np.sin(sr)
+        forward = CLAW * np.cos(sr)
+        lt = j6p + arm_fwd_n * forward + perp_rolled * spread
+        rt = j6p + arm_fwd_n * forward - perp_rolled * spread
+
         gc=(lt+rt)/2; go=np.linalg.norm(lt-rt)
-        gd=off(1,cum); gd=gd/(np.linalg.norm(gd)+1e-9)
+        gd=arm_fwd_n
         if self._prev_grip_center is not None:
             self._grip_velocity=gc-self._prev_grip_center
         self._prev_grip_center=gc.copy()
         return dict(claw_base=j6p, left_base=j6p.copy(), left_tip=lt,
                     right_base=j6p.copy(), right_tip=rt, grip_center=gc,
                     grip_opening=go, grip_dir=gd, is_closed=go<18,
-                    perp=np.array([-np.sin(yaw)*np.cos(roll),np.sin(roll),
-                                    np.cos(yaw)*np.cos(roll)]))
+                    perp=perp_rolled)
 
     def link_boxes(self):
         pts=self.forward_kinematics()
