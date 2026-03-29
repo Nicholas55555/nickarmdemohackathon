@@ -161,10 +161,10 @@ class MacroEngine:
         """Polite bow gesture."""
         home = {j: self.arm.angles[j] for j in self.arm.JOINTS}
         return self._run([
-            ("angles", dict(home, J2=30, J3=60), .5),
+            ("angles", dict(home, J2=30, J3=100), .5),
             ("angles", dict(home, J2=100, J3=130, J4=40), .7),
             ("angles", dict(home, J2=100, J3=130, J4=40), .6),  # hold
-            ("angles", dict(home, J2=30, J3=60), .5),
+            ("angles", dict(home, J2=30, J3=100), .5),
             ("angles", home, .5),
         ], "Bowing...")
 
