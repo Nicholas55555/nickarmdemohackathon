@@ -376,7 +376,7 @@ class App:
         top = ttk.Frame(self.root, style="D.TFrame")
         top.pack(fill=tk.X, padx=10, pady=(3,1))
         ttk.Label(top, text="MARS — Keyboard Control", style="T.TLabel").pack(side=tk.LEFT)
-        tk.Button(top, text="? Help", font=("Consolas",9,"bold"), bg="#1e3a5c",
+        tk.Button(top, text="Help", font=("Consolas",9,"bold"), bg="#1e3a5c",
                   fg="white", activebackground="#264b73", relief=tk.FLAT,
                   padx=8, pady=1, command=self._show_help).pack(side=tk.RIGHT)
 
