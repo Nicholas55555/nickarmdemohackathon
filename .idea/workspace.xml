@@ -68,7 +68,7 @@
       <updated>1774741691287</updated>
       <workItem from="1774741692608" duration="7325000" />
       <workItem from="1774798301737" duration="2516000" />
-      <workItem from="1774801141027" duration="2366000" />
+      <workItem from="1774801141027" duration="3513000" />
     </task>
     <task id="LOCAL-00001" summary="updated functionality">
       <option name="closed" value="true" />
@@ -190,7 +190,23 @@
       <option name="project" value="LOCAL" />
       <updated>1774802722956</updated>
     </task>
-    <option name="localTasksCounter" value="16" />
+    <task id="LOCAL-00016" summary="updated functionality">
+      <option name="closed" value="true" />
+      <created>1774803630292</created>
+      <option name="number" value="00016" />
+      <option name="presentableId" value="LOCAL-00016" />
+      <option name="project" value="LOCAL" />
+      <updated>1774803630292</updated>
+    </task>
+    <task id="LOCAL-00017" summary="updated functionality">
+      <option name="closed" value="true" />
+      <created>1774803646039</created>
+      <option name="number" value="00017" />
+      <option name="presentableId" value="LOCAL-00017" />
+      <option name="project" value="LOCAL" />
+      <updated>1774803646039</updated>
+    </task>
+    <option name="localTasksCounter" value="18" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -201,6 +217,6 @@
     <option name="LAST_COMMIT_MESSAGE" value="updated functionality" />
   </component>
   <component name="com.intellij.coverage.CoverageDataManagerImpl">
-    <SUITE FILE_PATH="coverage/armdemo$main.coverage" NAME="main Coverage Results" MODIFIED="1774803604237" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
+    <SUITE FILE_PATH="coverage/armdemo$main.coverage" NAME="main Coverage Results" MODIFIED="1774806462804" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
   </component>
 </project>

@@ -346,7 +346,8 @@ class App:
 
         # Held keys for continuous movement
         self._keys_held = set()
-        self._move_speed = 2.0  # degrees per tick
+        self._move_speed = 5.0  # degrees per tick
+        self._cam_smooth = 0.0  # camera blend factor (lower = smoother)
 
         self._last_time = time.time()
 
@@ -376,7 +377,7 @@ class App:
         top = ttk.Frame(self.root, style="D.TFrame")
         top.pack(fill=tk.X, padx=10, pady=(3,1))
         ttk.Label(top, text="MARS — Keyboard Control", style="T.TLabel").pack(side=tk.LEFT)
-        tk.Button(top, text="Help", font=("Consolas",9,"bold"), bg="#1e3a5c",
+        tk.Button(top, text="? Help", font=("Consolas",9,"bold"), bg="#1e3a5c",
                   fg="white", activebackground="#264b73", relief=tk.FLAT,
                   padx=8, pady=1, command=self._show_help).pack(side=tk.RIGHT)
 
@@ -473,6 +474,20 @@ class App:
             showvalue=False, command=self._on_speed)
         self.speed_slider.set(2.0)
         self.speed_slider.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
+
+        # ── Camera Smoothing slider ──────────────────────────────────
+        csf = ttk.LabelFrame(rf, text=" Cam Smooth ", style="D.TLabelframe")
+        csf.pack(fill=tk.X, pady=2)
+        csr = ttk.Frame(csf, style="D.TFrame"); csr.pack(fill=tk.X, padx=4, pady=2)
+        self.cam_smooth_lbl = ttk.Label(csr, text="6%", width=4,
+                                         style="D.TLabel", font=("Consolas",8))
+        self.cam_smooth_lbl.pack(side=tk.RIGHT)
+        self.cam_smooth_slider = tk.Scale(csr, from_=0, to=30, resolution=1,
+            orient=tk.HORIZONTAL, bg=BG, fg=FG, troughcolor=PANEL,
+            highlightbackground=BG, activebackground="#4a7c59", length=80,
+            showvalue=False, command=self._on_cam_smooth)
+        self.cam_smooth_slider.set(6)
+        self.cam_smooth_slider.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
 
         # ── Home Offsets ─────────────────────────────────────────────
         hf = ttk.LabelFrame(rf, text=" Home Offsets ", style="D.TLabelframe")
@@ -689,9 +704,9 @@ class App:
             self.btn_lock.config(text="LOCKED", bg="#5c3a1a", fg="white")
             self._draw_arm()
 
-    _VIEW_MODES = ["MANUAL", "PCA", "NORM", "LINEAR", "UNNORM"]
-    _VIEW_COLORS = {"MANUAL": "#3a2d2d", "PCA": "#5c3a1a", "NORM": "#1a3a2d",
-                    "LINEAR": "#1a2d3a", "UNNORM": "#3a1a3a"}
+    _VIEW_MODES = ["MANUAL", "BASIC", "PCA", "NORM", "LINEAR", "UNNORM"]
+    _VIEW_COLORS = {"MANUAL": "#3a2d2d", "BASIC": "#2d2d2d", "PCA": "#5c3a1a",
+                    "NORM": "#1a3a2d", "LINEAR": "#1a2d3a", "UNNORM": "#3a1a3a"}
 
     def _cycle_view_mode(self):
         """Cycle through: MANUAL → PCA → NORM → LINEAR → UNNORM → MANUAL..."""
@@ -724,7 +739,9 @@ class App:
     def _compute_auto_view(self, pts):
         """Dispatch to the active auto-camera algorithm."""
         mode = self._view_mode
-        if mode == "PCA":
+        if mode == "BASIC":
+            return self._cam_basic(pts)
+        elif mode == "PCA":
             return self._cam_pca(pts)
         elif mode == "NORM":
             return self._cam_ortho(pts, weighted=False)
@@ -732,32 +749,90 @@ class App:
             return self._cam_ortho(pts, weighted=True)
         elif mode == "UNNORM":
             return self._cam_unnorm(pts)
-        return self._view_elev, self._view_azim  # MANUAL fallback
+        return self._view_elev, self._view_azim
+
+    def _eigvec_to_view(self, cam, pts):
+        """Convert a 3D eigenvector (plot coords) to (elev, azim) for matplotlib.
+
+        Azimuth: from the eigenvector (which horizontal direction minimizes info loss).
+        Elevation: from the arm's geometry (height span vs horizontal reach).
+
+        When the arm reaches out horizontally → look from above (high elev).
+        When the arm reaches up vertically → look from the side (low elev).
+        When compact/folded → moderate angle to see all joints.
+        """
+        # Handle eigenvector sign ambiguity — prefer looking from above
+        if cam[2] < 0:
+            cam = -cam
+
+        # ── Azimuth from eigenvector ─────────────────────────────────
+        azim = math.degrees(math.atan2(cam[1], cam[0]))
+
+        # ── Elevation from arm geometry ──────────────────────────────
+        # Plot coords: pp[:,0]=armX, pp[:,1]=armZ, pp[:,2]=armY(height)
+        pp = np.array([[p[0], p[2], p[1]] for p in pts])
+
+        # Horizontal reach: max distance from base in XZ plane
+        base_xz = pp[0, :2]  # base X,Z
+        horiz_dists = [np.linalg.norm(p[:2] - base_xz) for p in pp]
+        h_reach = max(horiz_dists) if horiz_dists else 1.0
+
+        # Vertical span: range of heights
+        heights = pp[:, 2]
+        v_span = heights.max() - heights.min()
+
+        # Ratio: high h_reach relative to v_span → look from above
+        #         high v_span relative to h_reach → look from side
+        total = h_reach + v_span + 1e-6
+        horiz_ratio = h_reach / total  # 0 = pure vertical, 1 = pure horizontal
+
+        # Map: 0.0 (vertical arm) → 12° (side view)
+        #       0.5 (balanced)     → 35° (isometric-ish)
+        #       1.0 (horizontal)   → 65° (looking down)
+        elev = 12 + horiz_ratio * 53
+
+        # Also consider the eigenvector's vertical component as a nudge
+        eig_horiz = math.sqrt(cam[0]**2 + cam[1]**2)
+        eig_elev = math.degrees(math.atan2(abs(cam[2]), eig_horiz + 1e-9))
+        # Blend: 70% geometry-based, 30% eigenvector-based
+        elev = elev * 0.7 + eig_elev * 0.3
+
+        elev = max(5, min(85, elev))
+        return elev, azim
+
+    def _cam_basic(self, pts):
+        """Simple base-to-end-effector perpendicular camera.
+        Azimuth: 90° offset from the base→tip direction in XZ plane.
+        Elevation: fixed based on arm height vs reach ratio.
+        No eigendecomposition — just geometry."""
+        pp = np.array([[p[0], p[2], p[1]] for p in pts])
+        # Base-to-tip direction in ground plane
+        rg = np.array([pp[-1][0] - pp[0][0], pp[-1][1] - pp[0][1]])
+        rl = np.linalg.norm(rg)
+        # Azimuth: perpendicular to base→tip line
+        azim = (math.degrees(math.atan2(rg[1], rg[0])) - 90) if rl > 1e-3 else self._view_azim
+        # Elevation: height range vs horizontal reach
+        hs = [p[2] for p in pp]; hr = max(hs) - min(hs)
+        v = hr / (hr + max(rl, 1.))
+        elev = 15 + v * 35
+        return max(8, min(65, elev)), azim
 
     def _cam_pca(self, pts):
         """PCA on joint positions — camera along min-variance eigenvector.
         Maximizes spatial spread of projected points on screen.
         Implicitly weights longer links more (positions farther apart)."""
-        # Work in plot coords: (arm_X, arm_Z, arm_Y)
         pp = np.array([[p[0], p[2], p[1]] for p in pts])
         centroid = pp.mean(axis=0)
         centered = pp - centroid
         cov = centered.T @ centered / len(pp)
         eigenvalues, eigenvectors = np.linalg.eigh(cov)
-        # Min eigenvector = camera direction (least spread → lose nothing by collapsing)
-        cam = eigenvectors[:, 0]  # smallest eigenvalue
-        azim = math.degrees(math.atan2(cam[1], cam[0]))
-        # Elevation from vertical component
-        horiz = math.sqrt(cam[0]**2 + cam[1]**2)
-        elev = math.degrees(math.atan2(cam[2], horiz + 1e-9))
-        return max(8, min(65, abs(elev) + 15)), azim
+        return self._eigvec_to_view(eigenvectors[:, 0], pts)
 
     def _cam_ortho(self, pts, weighted=False):
         """Orthogonality on link directions — camera perpendicular to all links.
         Normalized (weighted=False): M = Σ d̂ᵢd̂ᵢᵀ — equal weight per link.
         Linear (weighted=True): M = Σ Lᵢ·d̂ᵢd̂ᵢᵀ — longer links matter more.
         Camera along minimum eigenvector of M."""
-        # Build 3×3 direction scatter in plot coords
         pp = np.array([[p[0], p[2], p[1]] for p in pts])
         M = np.zeros((3, 3))
         for i in range(len(pp) - 1):
@@ -770,11 +845,7 @@ class App:
             else:
                 M += np.outer(u, u)
         eigenvalues, eigenvectors = np.linalg.eigh(M)
-        cam = eigenvectors[:, 0]  # min eigenvector
-        azim = math.degrees(math.atan2(cam[1], cam[0]))
-        horiz = math.sqrt(cam[0]**2 + cam[1]**2)
-        elev = math.degrees(math.atan2(cam[2], horiz + 1e-9))
-        return max(8, min(65, abs(elev) + 15)), azim
+        return self._eigvec_to_view(eigenvectors[:, 0], pts)
 
     def _cam_unnorm(self, pts):
         """Unnormalized: M = Σ dᵢdᵢᵀ = Σ Lᵢ²·d̂ᵢd̂ᵢᵀ.
@@ -785,13 +856,9 @@ class App:
         for i in range(len(pp) - 1):
             d = pp[i+1] - pp[i]
             if np.linalg.norm(d) < 1e-6: continue
-            M += np.outer(d, d)  # raw vectors, no normalization
+            M += np.outer(d, d)
         eigenvalues, eigenvectors = np.linalg.eigh(M)
-        cam = eigenvectors[:, 0]
-        azim = math.degrees(math.atan2(cam[1], cam[0]))
-        horiz = math.sqrt(cam[0]**2 + cam[1]**2)
-        elev = math.degrees(math.atan2(cam[2], horiz + 1e-9))
-        return max(8, min(65, abs(elev) + 15)), azim
+        return self._eigvec_to_view(eigenvectors[:, 0], pts)
 
     # ══════════════════════════════════════════════════════════════════
     def _draw_arm(self):
@@ -930,7 +997,7 @@ class App:
 
             if self._view_mode != "MANUAL" and not self._drag_active and not self._view_locked:
                 te, ta = self._compute_auto_view(pts)
-                bl = 0.12
+                bl = self._cam_smooth
                 da = ta - self._view_azim
                 if da > 180: da -= 360
                 if da < -180: da += 360
@@ -1010,6 +1077,10 @@ class App:
     def _on_speed(self, v):
         self._move_speed = float(v)
         self.speed_lbl.config(text=f"{float(v):.1f}°/tick")
+
+    def _on_cam_smooth(self, v):
+        self._cam_smooth = int(float(v)) / 100.0
+        self.cam_smooth_lbl.config(text=f"{int(float(v))}%")
 
     def _go_home(self):
         self.macro.cancel()
