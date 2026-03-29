@@ -1,9 +1,8 @@
-
 # MARS — Robotic Arm Simulation
 
 Keyboard-controlled 6DOF robot arm simulator with real-time block physics,
-IK-driven macros, and four mathematically distinct auto-camera algorithms
-based on eigendecomposition of scatter matrices.
+IK-driven macros, and five auto-camera algorithms (one geometric, four
+eigendecomposition-based) with adjustable smoothing.
 
 Built for EagleHacks 2026. Simulates a LewanSoul LeArm with measured
 dimensions and servo limits.
@@ -13,9 +12,9 @@ dimensions and servo limits.
 ```bash
 pip install -r requirements.txt   # numpy, Pillow, matplotlib
 python main.py
-````
+```
 
-Press **F1** or click **? Help** for the full in-app guide.
+Press **F1** or click **? Help** for the full in-app guide (renders README.md).
 
 ## Quick Reference
 
@@ -188,17 +187,41 @@ Each iteration:
 
 ### 5. Auto-Camera Algorithms
 
-All four algorithms share the same structure: build a 3×3 scatter matrix from
-the arm's geometry, eigendecompose it, and point the camera along the
-**minimum eigenvector** — the direction where the arm has the least visual
-structure, so collapsing 3D → 2D along that axis loses the least information.
+Six camera modes, cycled with **V**: `MANUAL → BASIC → PCA → NORM → LINEAR → UNNORM`
 
-The camera smoothly tracks via exponential blending each frame:
+All auto modes smoothly track the arm via exponential blending each frame.
+The blend factor is adjustable via the **Cam Smooth** slider (1%–30%,
+default 6%):
 
 ```
-azim += (target_azim − azim) × 0.12        (with 360° wrapping)
-elev += (target_elev − elev) × 0.12
+azim += (target_azim − azim) × blend        (with 360° wrapping)
+elev += (target_elev − elev) × blend
 ```
+
+Lower values produce smoother, more cinematic camera motion. Higher values
+give snappier tracking.
+
+#### 5.0 BASIC — Base-to-End-Effector Perpendicular
+
+Simple geometric camera with no eigendecomposition. Looks perpendicular
+to the line from the arm base to the claw tip:
+
+```
+base_to_tip = (tip_XZ − base_XZ)
+azim = atan2(base_to_tip_Z, base_to_tip_X) − 90°
+```
+
+Elevation uses the height-range-to-reach ratio:
+
+```
+v = height_range / (height_range + horizontal_reach)
+elev = 15° + v × 35°
+```
+
+**Properties:** Fast, predictable, no linear algebra. Always orbits 90° from
+the arm's reach direction.
+
+**Best for:** Simple demos, predictable behavior, low computational cost.
 
 #### 5.1 PCA — Position Covariance
 
@@ -210,7 +233,19 @@ C = (1/n) · Σᵢ (pᵢ − p̄)(pᵢ − p̄)ᵀ
 
 where `pᵢ` are the 7 joint positions and `p̄` is their centroid.
 
-Camera direction = eigenvector of C with smallest eigenvalue.
+**Azimuth:** from the minimum eigenvector of C (direction of least spatial
+spread). **Elevation:** computed from arm geometry — the ratio of horizontal
+reach to vertical span determines whether to look more from above (extended)
+or from the side (upright):
+
+```
+h_ratio = h_reach / (h_reach + v_span)
+elev_geometry = 12° + h_ratio × 53°
+elev = elev_geometry × 0.7 + elev_eigenvector × 0.3
+```
+
+The 70/30 blend combines geometric awareness with the eigenvector's vertical
+component for smooth transitions.
 
 **Properties:** Implicitly weights longer links more because they push joints
 farther apart, increasing their contribution to the covariance. Analogous to
@@ -270,7 +305,35 @@ L² = 10,983 while the 15.9mm base has L² = 253 — a 43:1 ratio. Essentially
 **Best for:** When one link dominates the visual. Rarely the best general
 choice.
 
-#### 5.5 Comparison — PCA vs Orthogonality
+#### 5.5 Elevation Computation (PCA/NORM/LINEAR/UNNORM)
+
+For the four eigendecomposition modes, azimuth comes from the eigenvector
+but elevation is computed from the arm's physical geometry because the LeArm
+is a planar mechanism — the minimum eigenvector is always horizontal,
+carrying no useful elevation information.
+
+The elevation uses a 70/30 blend of geometry and eigenvector:
+
+```
+h_reach   = max horizontal distance from base in ground plane
+v_span    = height range (max Y − min Y)
+h_ratio   = h_reach / (h_reach + v_span)
+elev_geom = 12° + h_ratio × 53°            range: 12°–65°
+
+eig_elev  = atan2(|cam_z|, |cam_xy|)        from eigenvector
+elev      = elev_geom × 0.7 + eig_elev × 0.3
+```
+
+This produces:
+
+| Pose | h_ratio | Elevation | Why |
+|------|---------|-----------|-----|
+| Straight up (home) | 0.59 | ~30° | Balanced → isometric |
+| Extended forward | 0.71 | ~35° | Wide reach → look from above |
+| Compact folded | 0.35 | ~21° | Mostly vertical → side view |
+| Low reach (arm down) | 0.38 | ~23° | Tall span → side view |
+
+#### 5.6 Comparison — PCA vs Orthogonality
 
 Both approaches are eigendecompositions of scatter matrices, but they operate
 on different data:
@@ -337,16 +400,18 @@ On release, the block inherits 60% of the grip's velocity for throwing.
 
 ### 7. Macro Engine
 
-Step sequencer with smoothstep interpolation.
+Step sequencer with smoothstep interpolation and loop support.
 
 **Step types:**
 
-| Type     | Parameter         | Effect                      |
-| -------- | ----------------- | --------------------------- |
-| `open`   | —                 | Set J6 = 73° (fully open)   |
-| `close`  | —                 | Set J6 = 10° (fully closed) |
-| `move`   | [x, y, z] target  | IK-solve to position        |
-| `angles` | {J1:v, J2:v, ...} | Direct angle targets        |
+| Type         | Parameter         | Effect                      |
+| ------------ | ----------------- | --------------------------- |
+| `open`       | —                 | Set J6 = 73° (fully open)   |
+| `close`      | —                 | Set J6 = 10° (fully closed) |
+| `move`       | [x, y, z] target  | IK-solve to position        |
+| `angles`     | {J1:v, J2:v, ...} | Direct angle targets        |
+| `loop_start` | N (count)         | Begin loop, N iterations    |
+| `loop_end`   | —                 | End loop, jump back if remaining |
 
 **Smoothstep interpolation.** Each step blends from start to target using
 the smoothstep function for natural-looking motion (ease in/out):
@@ -356,6 +421,10 @@ t = clamp(elapsed / duration, 0, 1)
 f = t² · (3 − 2t)                           (smoothstep)
 angle = start × (1 − f) + target × f
 ```
+
+**Loop control.** `loop_start` stores the current step index and iteration
+count. `loop_end` decrements the counter and jumps back to the step after
+`loop_start` if iterations remain.
 
 ---
 
@@ -380,22 +449,26 @@ height for block approach).
 
 ## Files
 
-| File                | Lines | Description                                               |
-| ------------------- | ----- | --------------------------------------------------------- |
-| `main.py`           | 1370  | GUI, keyboard, 3D view, 4 camera algorithms, macros, help |
-| `arm_kinematics.py` | 185   | FK chain, IK solver, finger geometry, ground constraint   |
-| `block_physics.py`  | 85    | Gravity, collision, grab/throw mechanics                  |
-| `config.py`         | 73    | Measured dimensions, servo limits, GUI colors             |
+| File                | Lines | Description                                                  |
+| ------------------- | ----- | ------------------------------------------------------------ |
+| `main.py`           | 1370  | GUI, keyboard, 3D view, 5 camera algorithms, macros, help   |
+| `arm_kinematics.py` | 185   | FK chain, IK solver, finger geometry, ground constraint      |
+| `block_physics.py`  | 85    | Gravity, collision, grab/throw mechanics                     |
+| `config.py`         | 73    | Measured dimensions, servo limits, GUI colors                |
 
 ## Camera Modes (press V)
 
-| Mode   | Matrix          | Weighting   | Best For                   |
-| ------ | --------------- | ----------- | -------------------------- |
-| MANUAL | —               | —           | Presentations, inspection  |
-| PCA    | Pos. covariance | Implicit    | Extended reach, pick-place |
-| NORM   | Σ d̂ᵢd̂ᵢᵀ       | Equal (1×)  | Debugging joints, folded   |
-| LINEAR | Σ Lᵢ·d̂ᵢd̂ᵢᵀ    | Length (L×) | General all-rounder        |
-| UNNORM | Σ dᵢdᵢᵀ         | L²×         | Single-link dominated      |
+| Mode   | Method             | Azimuth            | Elevation           | Best For                  |
+| ------ | ------------------ | ------------------ | ------------------- | ------------------------- |
+| MANUAL | —                  | Drag to orbit      | Drag to orbit       | Presentations             |
+| BASIC  | Base→tip perp.     | atan2 − 90°        | Height/reach ratio  | Simple demos              |
+| PCA    | Pos. covariance    | Min eigenvector     | 70% geom + 30% eig | Extended reach, pick-place|
+| NORM   | Σ d̂ᵢd̂ᵢᵀ          | Min eigenvector     | 70% geom + 30% eig | Debugging joints, folded  |
+| LINEAR | Σ Lᵢ·d̂ᵢd̂ᵢᵀ       | Min eigenvector     | 70% geom + 30% eig | General all-rounder       |
+| UNNORM | Σ dᵢdᵢᵀ            | Min eigenvector     | 70% geom + 30% eig | Single-link dominated     |
+
+**Cam Smooth slider:** 1%–30% blend per frame (default 6%). Lower = smoother
+cinematic panning. Higher = snappier tracking.
 
 ## Preset Motions
 
@@ -410,7 +483,3 @@ height for block approach).
 | Block Wave | Pickup → wave ±50° J1 → place back   |
 | Toss       | Pickup → windup → fast throw (0.15s) |
 | Stack      | Pickup block A → place on block B    |
-
-```
-
-```

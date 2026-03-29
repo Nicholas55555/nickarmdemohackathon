@@ -347,7 +347,7 @@ class App:
         # Held keys for continuous movement
         self._keys_held = set()
         self._move_speed = 5.0  # degrees per tick
-        self._cam_smooth = 0.0  # camera blend factor (lower = smoother)
+        self._cam_smooth = 0.06  # camera blend factor (lower = smoother)
 
         self._last_time = time.time()
 
@@ -479,14 +479,14 @@ class App:
         csf = ttk.LabelFrame(rf, text=" Cam Smooth ", style="D.TLabelframe")
         csf.pack(fill=tk.X, pady=2)
         csr = ttk.Frame(csf, style="D.TFrame"); csr.pack(fill=tk.X, padx=4, pady=2)
-        self.cam_smooth_lbl = ttk.Label(csr, text="0%", width=4,
+        self.cam_smooth_lbl = ttk.Label(csr, text="6%", width=4,
                                          style="D.TLabel", font=("Consolas",8))
         self.cam_smooth_lbl.pack(side=tk.RIGHT)
-        self.cam_smooth_slider = tk.Scale(csr, from_=0, to=30, resolution=1,
+        self.cam_smooth_slider = tk.Scale(csr, from_=1, to=30, resolution=1,
             orient=tk.HORIZONTAL, bg=BG, fg=FG, troughcolor=PANEL,
             highlightbackground=BG, activebackground="#4a7c59", length=80,
             showvalue=False, command=self._on_cam_smooth)
-        self.cam_smooth_slider.set(0)
+        self.cam_smooth_slider.set(6)
         self.cam_smooth_slider.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
 
         # ── Home Offsets ─────────────────────────────────────────────
