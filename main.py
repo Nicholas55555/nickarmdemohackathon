@@ -170,7 +170,8 @@ class App:
         self.macro = MacroEngine(self.arm, self.physics)
 
         self._view_elev = 25.; self._view_azim = -60.
-        self._auto_track = True; self._drag_active = False
+        self._view_mode = "PCA"  # "MANUAL", "PCA", "NORM", "LINEAR", "UNNORM"
+        self._drag_active = False
         self._view_locked = False
         self._mpl_rotation_disabled = False
 
@@ -212,6 +213,9 @@ class App:
         top = ttk.Frame(self.root, style="D.TFrame")
         top.pack(fill=tk.X, padx=10, pady=(3,1))
         ttk.Label(top, text="MARS — Keyboard Control", style="T.TLabel").pack(side=tk.LEFT)
+        tk.Button(top, text="? Help", font=("Consolas",9,"bold"), bg="#1e3a5c",
+                  fg="white", activebackground="#264b73", relief=tk.FLAT,
+                  padx=8, pady=1, command=self._show_help).pack(side=tk.RIGHT)
 
         body = ttk.Frame(self.root, style="D.TFrame")
         body.pack(fill=tk.BOTH, expand=True, padx=10, pady=2)
@@ -233,9 +237,9 @@ class App:
                       fg="#94a3b8", activebackground="#334155", relief=tk.FLAT,
                       padx=3, pady=1, width=5,
                       command=lambda n=nm: self._set_view_preset(n)).pack(side=tk.LEFT, padx=1)
-        self.btn_view = tk.Button(vcf, text="AUTO", font=("Consolas",7,"bold"),
+        self.btn_view = tk.Button(vcf, text="PCA", font=("Consolas",7,"bold"),
                                    bg="#2d3a2d", fg="white", relief=tk.FLAT,
-                                   padx=3, pady=1, command=self._toggle_auto_view)
+                                   padx=3, pady=1, width=7, command=self._cycle_view_mode)
         self.btn_view.pack(side=tk.RIGHT, padx=1)
         self.btn_lock = tk.Button(vcf, text="LOCK", font=("Consolas",7,"bold"),
                                    bg="#2d2d2d", fg="#888", relief=tk.FLAT,
@@ -472,46 +476,122 @@ class App:
     def _set_view_preset(self, name):
         if name in VIEW_PRESETS:
             self._view_elev, self._view_azim = VIEW_PRESETS[name]
-            self._auto_track = False; self._view_locked = True
+            self._view_mode = "MANUAL"; self._view_locked = True
             self._disable_mpl_rotation()
             self.btn_view.config(text="MANUAL", bg="#3a2d2d")
             self.btn_lock.config(text="LOCKED", bg="#5c3a1a", fg="white")
             self._draw_arm()
 
-    def _toggle_auto_view(self):
-        self._auto_track = not self._auto_track
-        if self._auto_track:
+    _VIEW_MODES = ["MANUAL", "PCA", "NORM", "LINEAR", "UNNORM"]
+    _VIEW_COLORS = {"MANUAL": "#3a2d2d", "PCA": "#5c3a1a", "NORM": "#1a3a2d",
+                    "LINEAR": "#1a2d3a", "UNNORM": "#3a1a3a"}
+
+    def _cycle_view_mode(self):
+        """Cycle through: MANUAL → PCA → NORM → LINEAR → UNNORM → MANUAL..."""
+        idx = self._VIEW_MODES.index(self._view_mode)
+        self._view_mode = self._VIEW_MODES[(idx + 1) % len(self._VIEW_MODES)]
+        is_auto = self._view_mode != "MANUAL"
+        if is_auto:
             self._view_locked = False
             if not self._claw_move: self._enable_mpl_rotation()
             self.btn_lock.config(text="LOCK", bg="#2d2d2d", fg="#888")
-        self.btn_view.config(text="AUTO" if self._auto_track else "MANUAL",
-                             bg="#2d3a2d" if self._auto_track else "#3a2d2d")
+        self.btn_view.config(text=self._view_mode,
+                             bg=self._VIEW_COLORS[self._view_mode])
+        self._log(f"View: {self._view_mode}")
 
     def _toggle_lock_view(self):
         self._view_locked = not self._view_locked
         if self._view_locked:
-            self._auto_track = False; self._disable_mpl_rotation()
+            self._view_mode = "MANUAL"
+            self._disable_mpl_rotation()
             self.btn_lock.config(text="LOCKED", bg="#5c3a1a", fg="white")
             self.btn_view.config(text="MANUAL", bg="#3a2d2d")
         else:
             if not self._claw_move: self._enable_mpl_rotation()
             self.btn_lock.config(text="LOCK", bg="#2d2d2d", fg="#888")
 
-    def _compute_best_view(self, pts):
-        pp = np.array([[p[0],p[2],p[1]] for p in pts])
-        rg = np.array([pp[-1][0]-pp[0][0], pp[-1][1]-pp[0][1]])
-        rl = np.linalg.norm(rg)
-        azim = (math.degrees(math.atan2(rg[1],rg[0]))-90) if rl>1e-3 else self._view_azim
-        hs = [p[2] for p in pp]; hr = max(hs)-min(hs)
-        v = hr/(hr+max(rl,1.)); elev = 15+v*35
-        return max(8,min(65,elev)), azim
+    # ══════════════════════════════════════════════════════════════════
+    # AUTO-CAMERA ALGORITHMS
+    # ══════════════════════════════════════════════════════════════════
+
+    def _compute_auto_view(self, pts):
+        """Dispatch to the active auto-camera algorithm."""
+        mode = self._view_mode
+        if mode == "PCA":
+            return self._cam_pca(pts)
+        elif mode == "NORM":
+            return self._cam_ortho(pts, weighted=False)
+        elif mode == "LINEAR":
+            return self._cam_ortho(pts, weighted=True)
+        elif mode == "UNNORM":
+            return self._cam_unnorm(pts)
+        return self._view_elev, self._view_azim  # MANUAL fallback
+
+    def _cam_pca(self, pts):
+        """PCA on joint positions — camera along min-variance eigenvector.
+        Maximizes spatial spread of projected points on screen.
+        Implicitly weights longer links more (positions farther apart)."""
+        # Work in plot coords: (arm_X, arm_Z, arm_Y)
+        pp = np.array([[p[0], p[2], p[1]] for p in pts])
+        centroid = pp.mean(axis=0)
+        centered = pp - centroid
+        cov = centered.T @ centered / len(pp)
+        eigenvalues, eigenvectors = np.linalg.eigh(cov)
+        # Min eigenvector = camera direction (least spread → lose nothing by collapsing)
+        cam = eigenvectors[:, 0]  # smallest eigenvalue
+        azim = math.degrees(math.atan2(cam[1], cam[0]))
+        # Elevation from vertical component
+        horiz = math.sqrt(cam[0]**2 + cam[1]**2)
+        elev = math.degrees(math.atan2(cam[2], horiz + 1e-9))
+        return max(8, min(65, abs(elev) + 15)), azim
+
+    def _cam_ortho(self, pts, weighted=False):
+        """Orthogonality on link directions — camera perpendicular to all links.
+        Normalized (weighted=False): M = Σ d̂ᵢd̂ᵢᵀ — equal weight per link.
+        Linear (weighted=True): M = Σ Lᵢ·d̂ᵢd̂ᵢᵀ — longer links matter more.
+        Camera along minimum eigenvector of M."""
+        # Build 3×3 direction scatter in plot coords
+        pp = np.array([[p[0], p[2], p[1]] for p in pts])
+        M = np.zeros((3, 3))
+        for i in range(len(pp) - 1):
+            d = pp[i+1] - pp[i]
+            length = np.linalg.norm(d)
+            if length < 1e-6: continue
+            u = d / length
+            if weighted:
+                M += length * np.outer(u, u)
+            else:
+                M += np.outer(u, u)
+        eigenvalues, eigenvectors = np.linalg.eigh(M)
+        cam = eigenvectors[:, 0]  # min eigenvector
+        azim = math.degrees(math.atan2(cam[1], cam[0]))
+        horiz = math.sqrt(cam[0]**2 + cam[1]**2)
+        elev = math.degrees(math.atan2(cam[2], horiz + 1e-9))
+        return max(8, min(65, abs(elev) + 15)), azim
+
+    def _cam_unnorm(self, pts):
+        """Unnormalized: M = Σ dᵢdᵢᵀ = Σ Lᵢ²·d̂ᵢd̂ᵢᵀ.
+        Long links dominate quadratically. Good when one link
+        is much more important than others."""
+        pp = np.array([[p[0], p[2], p[1]] for p in pts])
+        M = np.zeros((3, 3))
+        for i in range(len(pp) - 1):
+            d = pp[i+1] - pp[i]
+            if np.linalg.norm(d) < 1e-6: continue
+            M += np.outer(d, d)  # raw vectors, no normalization
+        eigenvalues, eigenvectors = np.linalg.eigh(M)
+        cam = eigenvectors[:, 0]
+        azim = math.degrees(math.atan2(cam[1], cam[0]))
+        horiz = math.sqrt(cam[0]**2 + cam[1]**2)
+        elev = math.degrees(math.atan2(cam[2], horiz + 1e-9))
+        return max(8, min(65, abs(elev) + 15)), azim
 
     # ══════════════════════════════════════════════════════════════════
     def _draw_arm(self):
         try:
             ax = self.ax
             if hasattr(ax,'elev') and hasattr(ax,'azim'):
-                if (not self._auto_track or self._drag_active) and not self._view_locked:
+                if (self._view_mode == "MANUAL" or self._drag_active) and not self._view_locked:
                     self._view_elev = ax.elev; self._view_azim = ax.azim
 
             ax.clear(); ax.set_facecolor("#0d1117")
@@ -641,13 +721,14 @@ class App:
             ax.set_ylabel("Z", color="#475569", fontsize=5)
             ax.set_zlabel("Y", color="#475569", fontsize=5)
 
-            if self._auto_track and not self._drag_active and not self._view_locked:
-                te,ta = self._compute_best_view(pts); bl = .12
+            if self._view_mode != "MANUAL" and not self._drag_active and not self._view_locked:
+                te, ta = self._compute_auto_view(pts)
+                bl = 0.12
                 da = ta - self._view_azim
                 if da > 180: da -= 360
                 if da < -180: da += 360
-                self._view_azim += da*bl
-                self._view_elev += (te-self._view_elev)*bl
+                self._view_azim += da * bl
+                self._view_elev += (te - self._view_elev) * bl
 
             ax.view_init(elev=self._view_elev, azim=self._view_azim)
             ax.set_box_aspect([1,1,1])
@@ -768,6 +849,197 @@ class App:
     def _on_err(self, *a):
         print(f"[TK] {''.join(traceback.format_exception(*a))}", file=sys.stderr)
 
+    def _show_help(self):
+        """Open a help window with full user guide."""
+        hw = tk.Toplevel(self.root)
+        hw.title("MARS — Help & Guide")
+        hw.configure(bg=BG)
+        hw.geometry("620x780")
+        hw.minsize(500, 600)
+
+        # Scrollable text
+        frame = tk.Frame(hw, bg=BG)
+        frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        sb = tk.Scrollbar(frame)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        txt = tk.Text(frame, bg="#0d1117", fg="#c9d1d9", font=("Consolas", 9),
+                      wrap=tk.WORD, yscrollcommand=sb.set, relief=tk.FLAT,
+                      insertbackground="#c9d1d9", padx=12, pady=12)
+        txt.pack(fill=tk.BOTH, expand=True)
+        sb.config(command=txt.yview)
+
+        # Tags for formatting
+        txt.tag_configure("h1", font=("Consolas", 14, "bold"), foreground=ACCENT)
+        txt.tag_configure("h2", font=("Consolas", 11, "bold"), foreground="#f59e0b")
+        txt.tag_configure("h3", font=("Consolas", 10, "bold"), foreground="#10b981")
+        txt.tag_configure("key", font=("Consolas", 9, "bold"), foreground="#818cf8")
+        txt.tag_configure("mode", font=("Consolas", 9, "bold"), foreground="#06b6d4")
+        txt.tag_configure("dim", foreground="#6e7681")
+        txt.tag_configure("warn", foreground="#f59e0b")
+
+        def h1(s): txt.insert(tk.END, s + "\n", "h1")
+        def h2(s): txt.insert(tk.END, "\n" + s + "\n", "h2")
+        def h3(s): txt.insert(tk.END, "\n" + s + "\n", "h3")
+        def p(s): txt.insert(tk.END, s + "\n")
+        def key(s): txt.insert(tk.END, s, "key")
+        def dim(s): txt.insert(tk.END, s + "\n", "dim")
+        def nl(): txt.insert(tk.END, "\n")
+
+        h1("MARS — Robot Arm Simulation")
+        p("Keyboard-controlled 6DOF robot arm simulator with")
+        p("block physics, IK macros, and 4 auto-camera algorithms.")
+
+        h2("═══ KEYBOARD CONTROLS ═══")
+        nl()
+        p("Hold keys for continuous movement:")
+        nl()
+        key("  A / D"); p("  →  J1 Base Rotation (left/right)")
+        key("  W / S"); p("  →  J2 Shoulder (up/down)")
+        key("  Q / E"); p("  →  J3 Elbow (bend/extend)")
+        key("  R / F"); p("  →  J4 Wrist Pitch (tilt up/down)")
+        key("  T / G"); p("  →  J5 Wrist Rotation (roll)")
+        key("  Z / X"); p("  →  J6 Claw (close/open)")
+        nl()
+        key("  H"); p("       →  Home position (uses home offsets)")
+        key("  B"); p("       →  Spawn a new block")
+        key("  V"); p("       →  Cycle camera mode")
+        key("  Shift+L"); p("  →  Lock/unlock view")
+        key("  1-4"); p("     →  Macro pickup (Red/Blue/Green/Yellow)")
+        key("  Esc"); p("     →  Quit")
+
+        h2("═══ CAMERA MODES (press V to cycle) ═══")
+        nl()
+        p("All auto modes smoothly track the arm. The button in the")
+        p("view bar shows the current mode. Click or press V to cycle:")
+        nl()
+        p("  MANUAL → PCA → NORM → LINEAR → UNNORM → MANUAL...")
+
+        h3("MANUAL")
+        p("No auto-tracking. Drag the 3D view to orbit freely.")
+        p("Use view preset buttons (Front/Back/etc) for quick angles.")
+        dim("Best for: precise manual inspection, presentations")
+
+        h3("PCA — Position Covariance Analysis")
+        p("Builds covariance matrix from joint POSITIONS, finds the")
+        p("direction of least spatial spread, points camera there.")
+        p("Maximizes how spread-out joint dots appear on screen.")
+        nl()
+        p("  Matrix: Cov = Σ (pᵢ - centroid)(pᵢ - centroid)ᵀ / n")
+        p("  Camera: along minimum eigenvector")
+        nl()
+        p("Implicitly weights longer links more because they push")
+        p("joints farther apart in the covariance calculation.")
+        nl()
+        dim("Best for: arm extended, reaching for blocks, general")
+        dim("operation. Shows WHERE the claw is in the workspace.")
+        dim("The default choice for pick-and-place tasks.")
+
+        h3("NORM — Normalized Orthogonality")
+        p("Builds scatter matrix from UNIT direction vectors of each")
+        p("link. Every link gets equal vote regardless of length.")
+        p("Finds the camera angle most perpendicular to all links.")
+        nl()
+        p("  Matrix: M = Σ d̂ᵢd̂ᵢᵀ   (unit vectors)")
+        p("  Camera: along minimum eigenvector")
+        nl()
+        p("A 15mm base link has the same influence as the 105mm")
+        p("upper arm. Pure directional diversity analysis.")
+        nl()
+        dim("Best for: debugging joint configurations, folded/compact")
+        dim("poses where PCA sees a blob. Every joint bend is visible")
+        dim("regardless of how short that link segment is.")
+
+        h3("LINEAR — Length-Weighted Orthogonality")
+        p("Same as NORM but each link's vote is weighted by its")
+        p("length. Longer links matter more, short links less.")
+        nl()
+        p("  Matrix: M = Σ Lᵢ · d̂ᵢd̂ᵢᵀ   (length weighted)")
+        p("  Camera: along minimum eigenvector")
+        nl()
+        p("Hybrid approach: keeps the directional framework of")
+        p("orthogonality but adds importance scaling. The 105mm")
+        p("upper arm gets 7× more vote than the 15mm base.")
+        nl()
+        dim("Best for: balanced view — important links dominate")
+        dim("but small links still contribute. Good all-rounder")
+        dim("when you want both spatial awareness and joint detail.")
+
+        h3("UNNORM — Unnormalized (Length² Weighted)")
+        p("Uses raw link vectors without normalizing. Equivalent")
+        p("to L²-weighting the unit direction scatter matrix.")
+        nl()
+        p("  Matrix: M = Σ dᵢdᵢᵀ = Σ Lᵢ² · d̂ᵢd̂ᵢᵀ")
+        p("  Camera: along minimum eigenvector")
+        nl()
+        p("The 105mm upper arm gets 49× more vote than the 15mm")
+        p("base. Essentially 'point camera perpendicular to the")
+        p("longest link and mostly ignore everything else.'")
+        nl()
+        dim("Best for: when one link dominates the visual (e.g. the")
+        dim("arm is mostly straight with one long segment). Rarely")
+        dim("the best general choice but useful to compare against.")
+
+        h2("═══ WHEN TO USE EACH MODE ═══")
+        nl()
+        p("┌─────────────────────────────────────────────────────┐")
+        p("│ Scenario                    │ Best Mode             │")
+        p("├─────────────────────────────┼───────────────────────┤")
+        p("│ Reaching for a block        │ PCA                   │")
+        p("│ Picking up / placing        │ PCA or LINEAR         │")
+        p("│ Arm folded, debugging       │ NORM                  │")
+        p("│ Checking specific joint     │ NORM or MANUAL        │")
+        p("│ General operation           │ LINEAR                │")
+        p("│ Presentation / demo         │ MANUAL + presets       │")
+        p("│ Comparing algorithms        │ Press V repeatedly    │")
+        p("└─────────────────────────────┴───────────────────────┘")
+
+        h2("═══ GUI CONTROLS ═══")
+        nl()
+        h3("View Bar (below 3D view)")
+        p("Front/Back/Left/Right/Top/Iso — preset angles (locks view)")
+        p("Mode button — shows current auto-camera mode, click to cycle")
+        p("LOCK — freezes the view completely (no rotation, no tracking)")
+
+        h3("Right Panel (scrollable)")
+        p("Home button — sends arm to home position")
+        p("Claw Move — click in 3D view to IK-solve arm to that point")
+        p("Key Speed slider — degrees per tick for held keys (0.5–10)")
+        p("Home Offset dials — set custom home angles for each joint")
+        p("Platform slider — raise/lower the arm base (0–400mm)")
+        p("Servo sliders — direct joint angle control")
+        p("Macro buttons — auto pickup colored blocks")
+
+        h3("Blocks")
+        p("Blocks spawn on the ground near the arm. The claw can")
+        p("grab blocks when closed near them. Open the claw to")
+        p("release/throw. Blocks have gravity, bounce, and friction.")
+
+        h3("Claw Move Mode")
+        p("Click 'Claw Move: ON' then click in the 3D view.")
+        p("The arm IK-solves to that ground position instantly.")
+        p("Useful for quickly positioning the arm near a block.")
+
+        h2("═══ THEORY ═══")
+        nl()
+        p("All four auto-camera modes find an optimal viewing angle")
+        p("by eigendecomposing a 3×3 scatter matrix. The camera")
+        p("points along the minimum eigenvector — the direction")
+        p("where collapsing the 3D scene to 2D loses the least")
+        p("information.")
+        nl()
+        p("PCA and NORM are analogous to cosine similarity vs")
+        p("euclidean distance: PCA cares about positions (where"),
+        p("joints are), NORM cares about directions (which way")
+        p("links point). LINEAR and UNNORM interpolate between")
+        p("them with different weighting strengths.")
+
+        txt.config(state=tk.DISABLED)
+
+        # Close button
+        tk.Button(hw, text="Close", font=("Consolas", 10, "bold"),
+                  bg="#333", fg="white", relief=tk.FLAT, padx=20, pady=4,
+                  command=hw.destroy).pack(pady=(0, 10))
+
     def close(self):
         self.root.destroy()
 
@@ -792,9 +1064,10 @@ def main():
     # Single-press bindings
     root.bind("<h>", lambda e: app._go_home())
     root.bind("<b>", lambda e: app._spawn_block())
-    root.bind("<v>", lambda e: app._toggle_auto_view())
+    root.bind("<v>", lambda e: app._cycle_view_mode())
     root.bind("<L>", lambda e: app._toggle_lock_view())  # Shift+L to avoid J5 conflict
     root.bind("<Escape>", lambda e: app.close())
+    root.bind("<F1>", lambda e: app._show_help())
     root.bind("1", lambda e: app._run_macro("Red"))
     root.bind("2", lambda e: app._run_macro("Blue"))
     root.bind("3", lambda e: app._run_macro("Green"))
