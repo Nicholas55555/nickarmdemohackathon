@@ -1,6 +1,4 @@
-Here’s the README text with the looping references removed, based on your uploaded markdown. 
 
-````markdown
 # MARS — Robotic Arm Simulation
 
 Keyboard-controlled 6DOF robot arm simulator with real-time block physics,
