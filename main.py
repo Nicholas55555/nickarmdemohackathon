@@ -465,14 +465,14 @@ class App:
         spf = ttk.LabelFrame(rf, text=" Key Speed ", style="D.TLabelframe")
         spf.pack(fill=tk.X, pady=2)
         spr = ttk.Frame(spf, style="D.TFrame"); spr.pack(fill=tk.X, padx=4, pady=2)
-        self.speed_lbl = ttk.Label(spr, text="2.0°/tick", width=8,
+        self.speed_lbl = ttk.Label(spr, text="5.0°/tick", width=8,
                                     style="D.TLabel", font=("Consolas",8))
         self.speed_lbl.pack(side=tk.RIGHT)
         self.speed_slider = tk.Scale(spr, from_=0.5, to=10.0, resolution=0.5,
             orient=tk.HORIZONTAL, bg=BG, fg=FG, troughcolor=PANEL,
             highlightbackground=BG, activebackground="#4a7c59", length=80,
             showvalue=False, command=self._on_speed)
-        self.speed_slider.set(2.0)
+        self.speed_slider.set(5.0)
         self.speed_slider.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
 
         # ── Camera Smoothing slider ──────────────────────────────────
