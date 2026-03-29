@@ -25,3 +25,20 @@ Q/E → J3 elbow   Z/X → J6 claw    1-4 = Macro  F1 = Help
 | NORM   | Equal link visibility | Debugging joints, folded poses |
 | LINEAR | Weighted link visibility | General all-rounder |
 | UNNORM | Longest link visibility | Single-link dominated poses |
+
+## Preset Motions
+
+| Gesture | Description |
+|---------|-------------|
+| Wave    | Arm swings left-right |
+| Bow     | Polite forward dip |
+| Nod     | Wrist nods up/down (yes) |
+| Shake   | Wrist rolls side-to-side (no) |
+| Spin    | Full 360° base rotation with arm extended |
+| Flex    | Curl and extend like a muscle |
+
+| Block Trick | Description |
+|-------------|-------------|
+| Block Wave  | Pick up block, wave it, place back |
+| Toss        | Pick up block, wind up, throw forward |
+| Stack       | Pick up first block, stack on second |
