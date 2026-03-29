@@ -1,12 +1,8 @@
 """
-Two-Hand Tracker with Forearm + FaceMesh Wink Detection.
+Two-Hand Tracker with Forearm Integration.
 
 LEFT HAND  → J1 base, J2 shoulder, J3 elbow
-RIGHT HAND → J4 wrist pitch, J5 roll, J6 claw
-WINK       → close/open claw (overrides J6 when detected)
-
-FaceMesh detects eye closure via Eye Aspect Ratio (EAR).
-A wink (one eye closed, other open) toggles the claw.
+RIGHT HAND → J4 wrist pitch, J5 roll, J6 claw (thumb vs 4 fingers)
 """
 
 import os, math, sys
@@ -21,11 +17,9 @@ import mediapipe as mp
 
 # ══════════════════════════════════════════════════════════════════════
 _API = None
-_face_mesh_mod = None
 try:
     _hands_mod = mp.solutions.hands
     _pose_mod = mp.solutions.pose
-    _face_mesh_mod = mp.solutions.face_mesh
     _draw = mp.solutions.drawing_utils
     _API = "solutions"
 except AttributeError:
@@ -54,19 +48,11 @@ _HAND_MODEL = os.path.join(_DIR, "hand_landmarker.task")
 _POSE_MODEL = os.path.join(_DIR, "pose_landmarker_lite.task")
 
 # ══════════════════════════════════════════════════════════════════════
-# Landmark indices
-# ══════════════════════════════════════════════════════════════════════
 WRIST=0; THUMB_TIP=4; INDEX_MCP=5; INDEX_TIP=8
 MIDDLE_MCP=9; MIDDLE_TIP=12; RING_TIP=16; PINKY_MCP=17; PINKY_TIP=20
 
 P_L_SHOULDER=11; P_L_ELBOW=13; P_L_WRIST=15
 P_R_SHOULDER=12; P_R_ELBOW=14; P_R_WRIST=16
-
-# FaceMesh eye landmarks for EAR (Eye Aspect Ratio)
-# Right eye (person's right = image left after flip = MP right eye)
-R_EYE = [33, 160, 158, 133, 153, 144]
-# Left eye (person's left = image right after flip = MP left eye)
-L_EYE = [362, 385, 387, 263, 373, 380]
 
 _HAND_CONN = [
     (0,1),(1,2),(2,3),(3,4),(0,5),(5,6),(6,7),(7,8),
@@ -81,14 +67,6 @@ def _remap(v, slo, shi, dlo, dhi):
 def _signed_angle_2d(v, ref):
     return math.degrees(math.atan2(ref[0]*v[1]-ref[1]*v[0], ref[0]*v[0]+ref[1]*v[1]))
 
-def _eye_aspect_ratio(landmarks, eye_indices):
-    """Compute EAR: (|p2-p6| + |p3-p5|) / (2*|p1-p4|)."""
-    p = [np.array([landmarks[i].x, landmarks[i].y]) for i in eye_indices]
-    v1 = np.linalg.norm(p[1] - p[5])
-    v2 = np.linalg.norm(p[2] - p[4])
-    h = np.linalg.norm(p[0] - p[3])
-    return (v1 + v2) / (2.0 * h + 1e-9)
-
 def detect_camera_fov(cap):
     if not CAM_FOV_AUTO: return CAM_FOV
     aw = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
@@ -101,8 +79,6 @@ def detect_camera_fov(cap):
 
 # ══════════════════════════════════════════════════════════════════════
 class HandPairTracker:
-    EAR_THRESHOLD = 0.20   # below this = eye closed
-    WINK_FRAMES = 3        # must hold for N frames to count
 
     def __init__(self):
         self.fov_deg = CAM_FOV
@@ -113,7 +89,6 @@ class HandPairTracker:
         self._homes = {j: SERVO[j][2] for j in [f"J{i}" for i in range(1,7)]}
         self._cal_hand_scale = None
         self._pose_available = False
-        self._face_available = False
 
         # Forearm sensitivity (0-100)
         self.j1_forearm_sens = 70
@@ -121,15 +96,9 @@ class HandPairTracker:
         self.j4_forearm_sens = 0
         self.j5_forearm_sens = 0
 
-        # Finger/hand sensitivity (0-100) — multiplier on hand contribution
-        self.left_finger_sens = 50    # left hand → J1/J2/J3
-        self.right_finger_sens = 50   # right hand → J4/J5
-
-        # Wink state
-        self._wink_claw_closed = False
-        self._l_eye_closed_count = 0
-        self._r_eye_closed_count = 0
-        self._wink_cooldown = 0
+        # Finger/hand sensitivity (0-100)
+        self.left_finger_sens = 50
+        self.right_finger_sens = 50
 
         self._init_detectors()
 
@@ -151,20 +120,6 @@ class HandPairTracker:
                     min_detection_confidence=0.5, min_tracking_confidence=0.4)
                 self._pose_available = True
             except: self._pose = None
-            # FaceMesh for wink detection
-            if _face_mesh_mod is not None:
-                try:
-                    self._face = _face_mesh_mod.FaceMesh(
-                        static_image_mode=False, max_num_faces=1,
-                        refine_landmarks=True,
-                        min_detection_confidence=0.5, min_tracking_confidence=0.4)
-                    self._face_available = True
-                    print("[Tracker] FaceMesh loaded (wink detection ON)")
-                except Exception as e:
-                    self._face = None
-                    print(f"[Tracker] FaceMesh unavailable: {e}")
-            else:
-                self._face = None
         else:
             if not os.path.exists(_HAND_MODEL):
                 raise RuntimeError(f"Hand model not found: {_HAND_MODEL}")
@@ -181,11 +136,8 @@ class HandPairTracker:
                     self._pose_available = True
                 except: self._pose = None
             else: self._pose = None
-            self._face = None  # tasks API FaceMesh needs separate model file
         if self._pose_available: print("[Tracker] Pose loaded")
 
-    # ══════════════════════════════════════════════════════════════════
-    # DETECTION HELPERS
     # ══════════════════════════════════════════════════════════════════
     def _detect_hands(self, bgr):
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
@@ -232,83 +184,17 @@ class HandPairTracker:
                              (int(pl[b].x*w),int(pl[b].y*h)),(50,50,50),1)
             return [(l.x,l.y,l.z) for l in pl], frame
 
-    def _detect_wink(self, bgr, frame):
-        """Detect wink and toggle claw state. Returns (wink_active, frame)."""
-        if not self._face_available or not self._face:
-            return False, frame
-        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-        res = self._face.process(rgb)
-        if not res.multi_face_landmarks:
-            self._l_eye_closed_count = 0
-            self._r_eye_closed_count = 0
-            return False, frame
-
-        face = res.multi_face_landmarks[0]
-        lms = face.landmark
-        h, w = bgr.shape[:2]
-
-        # Compute EAR for each eye
-        l_ear = _eye_aspect_ratio(lms, L_EYE)
-        r_ear = _eye_aspect_ratio(lms, R_EYE)
-
-        l_closed = l_ear < self.EAR_THRESHOLD
-        r_closed = r_ear < self.EAR_THRESHOLD
-
-        # Draw eye indicators
-        for indices, ear, closed in [(L_EYE, l_ear, l_closed), (R_EYE, r_ear, r_closed)]:
-            center = lms[indices[0]]
-            cx, cy = int(center.x * w), int(center.y * h)
-            col = (0, 0, 255) if closed else (0, 255, 0)
-            cv2.circle(frame, (cx, cy), 6, col, 2)
-            cv2.putText(frame, f"{ear:.2f}", (cx+10, cy-5),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.3, col, 1)
-
-        if self._wink_cooldown > 0:
-            self._wink_cooldown -= 1
-            return self._wink_claw_closed, frame
-
-        # Wink = one eye closed, other open (not both closed = blink)
-        wink_detected = False
-        if l_closed and not r_closed:
-            self._l_eye_closed_count += 1
-            self._r_eye_closed_count = 0
-            if self._l_eye_closed_count >= self.WINK_FRAMES:
-                wink_detected = True
-        elif r_closed and not l_closed:
-            self._r_eye_closed_count += 1
-            self._l_eye_closed_count = 0
-            if self._r_eye_closed_count >= self.WINK_FRAMES:
-                wink_detected = True
-        else:
-            self._l_eye_closed_count = 0
-            self._r_eye_closed_count = 0
-
-        if wink_detected:
-            self._wink_claw_closed = not self._wink_claw_closed
-            self._wink_cooldown = 15  # cooldown frames to prevent rapid toggle
-            self._l_eye_closed_count = 0
-            self._r_eye_closed_count = 0
-
-        # Show wink claw state
-        state = "WINK:CLOSED" if self._wink_claw_closed else "WINK:OPEN"
-        cv2.putText(frame, state, (w-150, 25),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45,
-                    (0,0,255) if self._wink_claw_closed else (0,200,0), 2)
-
-        return self._wink_claw_closed, frame
-
     # ══════════════════════════════════════════════════════════════════
-    # LEFT HAND → J1, J2, J3 (with forearm + finger sensitivity)
+    # LEFT HAND → J1, J2, J3
     # ══════════════════════════════════════════════════════════════════
     def _extract_position_joints(self, lms, h, w, forearm_dir=None):
         wrist = np.array([lms[WRIST][0], lms[WRIST][1]])
         mid_mcp = np.array([lms[MIDDLE_MCP][0], lms[MIDDLE_MCP][1]])
         hand_scale = np.linalg.norm(wrist - mid_mcp)
-        fs = self.left_finger_sens / 100.0   # finger sensitivity 0..1
+        fs = self.left_finger_sens / 100.0
         j1_s = self.j1_forearm_sens / 100.0
         j2_s = self.j2_forearm_sens / 100.0
 
-        # J1 — hand component scaled by finger sensitivity
         j1_hand = -(wrist[0] - 0.5) * 2.0 * 90.0 * max(0.2, fs * 2.0)
         if forearm_dir is not None and np.linalg.norm(forearm_dir)>0.01 and j1_s>0.01:
             j1_fa = math.degrees(math.atan2(-forearm_dir[0], forearm_dir[1]))
@@ -318,8 +204,7 @@ class HandPairTracker:
             j1 = j1_hand
         j1 = _clamp(j1, *SERVO["J1"][:2])
 
-        # J2 — hand Y scaled by finger sensitivity
-        y_range = 0.6 / max(0.2, fs * 2.0)  # wider range = less sensitive
+        y_range = 0.6 / max(0.2, fs * 2.0)
         j2_hand = _remap(wrist[1], 0.5-y_range/2, 0.5+y_range/2,
                          SERVO["J2"][0], SERVO["J2"][1])
         if forearm_dir is not None and np.linalg.norm(forearm_dir)>0.01 and j2_s>0.01:
@@ -331,7 +216,6 @@ class HandPairTracker:
             j2 = j2_hand
         j2 = _clamp(j2, *SERVO["J2"][:2])
 
-        # J3 — depth from hand scale (finger sens affects range mapping)
         scale_range = 0.15 / max(0.2, fs * 2.0)
         if self._cal_hand_scale and self._cal_hand_scale > 0.01:
             dr = hand_scale / self._cal_hand_scale
@@ -344,7 +228,7 @@ class HandPairTracker:
         return dict(J1=j1, J2=j2, J3=j3), hand_scale
 
     # ══════════════════════════════════════════════════════════════════
-    # RIGHT HAND → J4, J5, J6 (with forearm + finger sensitivity)
+    # RIGHT HAND → J4, J5, J6 (thumb vs 4 fingers for claw)
     # ══════════════════════════════════════════════════════════════════
     def _extract_claw_joints(self, lms, h, w, forearm_dir=None):
         wrist = np.array([lms[WRIST][0], lms[WRIST][1]])
@@ -364,7 +248,6 @@ class HandPairTracker:
         j5_s = self.j5_forearm_sens / 100.0
         has_fa = forearm_dir is not None and np.linalg.norm(forearm_dir)>1e-6
 
-        # J4 — scaled by finger sensitivity
         j4_hand = _signed_angle_2d(hand_dir, horizontal) if np.linalg.norm(hand_dir)>1e-6 else 0.
         j4_hand *= max(0.2, fs * 2.0)
         if has_fa and j4_s > 0.01:
@@ -374,7 +257,6 @@ class HandPairTracker:
             j4 = j4_hand
         j4 = _clamp(j4, *SERVO["J4"][:2])
 
-        # J5 — scaled by finger sensitivity
         j5_hand = _signed_angle_2d(palm_vec, horizontal) if np.linalg.norm(palm_vec)>1e-6 else 0.
         j5_hand *= max(0.2, fs * 2.0)
         if has_fa and j5_s > 0.01:
@@ -385,7 +267,7 @@ class HandPairTracker:
             j5 = j5_hand
         j5 = _clamp(j5, *SERVO["J5"][:2])
 
-        # J6 — claw (unaffected by finger sensitivity, it's a direct gesture)
+        # J6: thumb vs 4 fingertips (pure gesture, unaffected by sensitivity)
         four_avg = np.mean([idx_tip, mid_tip, ring_tip, pk_tip], axis=0)
         pinch = np.linalg.norm(thumb_tip - four_avg)
         palm_sz = np.linalg.norm(idx_mcp - pk_mcp)
@@ -404,8 +286,7 @@ class HandPairTracker:
                    raw_angles={}, frame=bgr_frame.copy(),
                    left_hand_ok=False, right_hand_ok=False,
                    grip_01=1.0, fov=self.fov_deg,
-                   l_forearm_ok=False, forearm_ok=False,
-                   wink_claw=False, face_ok=False)
+                   l_forearm_ok=False, forearm_ok=False)
 
         # Pose (forearms)
         pose_px, frame = self._detect_pose(bgr_frame)
@@ -425,11 +306,6 @@ class HandPairTracker:
                 r_forearm_dir=fd_r; out["forearm_ok"]=True
                 cv2.line(frame,(int(r_el[0]*w),int(r_el[1]*h)),
                          (int(r_wr[0]*w),int(r_wr[1]*h)),(80,80,120),2)
-
-        # FaceMesh (wink)
-        wink_closed, frame = self._detect_wink(bgr_frame, frame)
-        out["wink_claw"] = wink_closed
-        out["face_ok"] = self._face_available
 
         # Hands
         hands = self._detect_hands(bgr_frame)
@@ -467,13 +343,6 @@ class HandPairTracker:
         if right_hand:
             lms=right_hand["landmarks"]
             j456,grip_01=self._extract_claw_joints(lms,h,w,r_forearm_dir)
-            # Wink overrides J6
-            if self._face_available and wink_closed:
-                j456["J6"] = SERVO["J6"][0]  # closed
-                grip_01 = 0.0
-            elif self._face_available and not wink_closed:
-                j456["J6"] = SERVO["J6"][1]  # open
-                grip_01 = 1.0
             raw.update(j456); out["right_hand_ok"]=True; out["grip_01"]=grip_01
             pts=[(int(l[0]*w),int(l[1]*h)) for l in lms]
             for a,b in _HAND_CONN:
@@ -502,8 +371,7 @@ class HandPairTracker:
         rh="R:OK" if out["right_hand_ok"] else "R:--"
         lf="LF" if out.get("l_forearm_ok") else ""
         rf="RF" if out.get("forearm_ok") else ""
-        fc="👁" if out["face_ok"] else ""
-        info=[f"{lh} {lf} {rh} {rf} {fc}",
+        info=[f"{lh} {lf} {rh} {rf}",
               f"J1:{smoothed.get('J1',0):+5.0f} J2:{smoothed.get('J2',0):5.0f} J3:{smoothed.get('J3',0):5.0f}",
               f"J4:{smoothed.get('J4',0):+5.0f} J5:{smoothed.get('J5',0):+5.0f} J6:{smoothed.get('J6',0):5.0f}",
               f"Claw:{'CLOSED' if grip_01<0.4 else 'OPEN'}"]
@@ -530,7 +398,4 @@ class HandPairTracker:
         except: pass
         try:
             if self._pose: self._pose.close()
-        except: pass
-        try:
-            if self._face: self._face.close()
         except: pass

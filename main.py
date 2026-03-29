@@ -303,13 +303,14 @@ class App:
                           padx=4, pady=1, command=cmd, **kw)
             b.pack(fill=tk.X, padx=3, pady=1);
             return b
+
         bf = ttk.LabelFrame(rf, text=" Controls ", style="D.TLabelframe")
         bf.pack(fill=tk.X, pady=(0,2))
         self.btn_cam = btn(bf, "Start Camera", "#1b4332", self._toggle_cam)
         self.btn_track = btn(bf, "Track (M)", "#1a3a5c", self._toggle_track, state=tk.DISABLED)
         self.btn_cal = btn(bf, "Calibrate (Space)", "#5c3a1a", self._calibrate, state=tk.DISABLED)
         self.btn_home = btn(bf, "Home (H)", "#333", self._go_home)
-        self.btn_claw_drag = btn(bf, "Claw Drag: OFF", "#2d2d3a", self._toggle_claw_drag)
+        self.btn_claw_drag = btn(bf, "Claw Move: OFF", "#2d2d3a", self._toggle_claw_move)
 
         # ── Home Offsets — all joints get dials ─────────────────────────
         hf = ttk.LabelFrame(rf, text=" Home Offsets ", style="D.TLabelframe")
@@ -322,7 +323,7 @@ class App:
         for jn, lbl in [("J1", "J1"), ("J5", "J5")]:
             box = ttk.Frame(dr1, style="D.TFrame")
             box.pack(side=tk.LEFT, expand=True)
-            d = DegreeDial(box, size=56, value=0, label=lbl,
+            d = DegreeDial(box, size=64, value=0, label=lbl,
                            command=lambda v, j=jn: self._on_dial(j, v))
             d.pack(padx=1)
             self._home_dials[jn] = d
@@ -463,12 +464,26 @@ class App:
     def _on_3d_press(self, event):
         if event.button != 1:
             return
-        if self._claw_drag:
-            self._block_drag = True
-            self._drag_start_ee = self.arm.get_end_effector().copy()
-            self._mouse_press_pos = (event.x, event.y)
-            self._disable_mpl_rotation()
+        # Claw Move mode → click to position arm via IK
+        if self._claw_drag and event.xdata is not None and event.ydata is not None:
+            # event.xdata/ydata are in plot coords (arm_X, arm_Z)
+            # We target a point above the ground at that XZ position
+            target_x = event.xdata   # plot X = arm X
+            target_z = event.ydata   # plot Y = arm Z
+            target_y = 40.0          # hover height above ground (mm)
+            target = np.array([target_x, target_y, target_z])
+            ik = self.arm.solve_angles_for_position(target)
+            if ik:
+                for j, v in ik.items():
+                    self.arm.set_angle(j, v)
+                self.arm.enforce_ground_constraint()
+                self._sync_sliders()
+                self._log(f"Move → X={target_x:.0f} Z={target_z:.0f}")
+            else:
+                self._log("Unreachable")
+            self._draw_arm()
             return
+        # Block drag (grabbed block)
         grabbed = [b for b in self.physics.blocks if b.grabbed]
         if grabbed:
             self._block_drag = True
@@ -476,6 +491,7 @@ class App:
             self._mouse_press_pos = (event.x, event.y)
             self._disable_mpl_rotation()
             return
+        # Normal view rotation
         if not self._view_locked:
             self._drag_active = True
             self._enable_mpl_rotation()
@@ -487,7 +503,7 @@ class App:
         self._drag_active = False
         self._block_drag = False
         self._mouse_press_pos = None
-        if was_ik and not self._claw_drag and not self._view_locked:
+        if was_ik and not self._view_locked:
             self._enable_mpl_rotation()
 
     def _on_3d_motion(self, event):
@@ -497,21 +513,13 @@ class App:
             return
         dx = (event.x - self._mouse_press_pos[0])
         dy = (event.y - self._mouse_press_pos[1])
-
-        # Camera-relative movement:
-        # Horizontal drag → move perpendicular to camera view (XZ plane)
-        # Vertical drag → move up/down (Y axis)
         azim_rad = math.radians(self._view_azim)
-
-        # View-right direction in plot space → arm XZ plane
         right_x = -math.sin(azim_rad)
         right_z = math.cos(azim_rad)
-
-        scale = 1.2  # pixels to mm
+        scale = 1.2
         move_x = dx * right_x * scale
         move_z = dx * right_z * scale
-        move_y = -dy * scale  # up = negative screen Y
-
+        move_y = -dy * scale
         target = self._drag_start_ee + np.array([move_x, move_y, move_z])
         target[1] = max(5, target[1])
         ik = self.arm.solve_angles_for_position(target)
@@ -522,7 +530,7 @@ class App:
             self._sync_sliders()
             self._draw_arm()
 
-    def _toggle_claw_drag(self):
+    def _toggle_claw_move(self):
         self._claw_drag = not self._claw_drag
         if self._claw_drag:
             self._disable_mpl_rotation()
@@ -530,9 +538,9 @@ class App:
             if not self._view_locked:
                 self._enable_mpl_rotation()
         self.btn_claw_drag.config(
-            text=f"Claw Drag: {'ON' if self._claw_drag else 'OFF'}",
+            text=f"Claw Move: {'ON' if self._claw_drag else 'OFF'}",
             bg="#3a5c1a" if self._claw_drag else "#2d2d3a")
-        self._log(f"Claw drag {'ON' if self._claw_drag else 'OFF'}")
+        self._log(f"Claw move {'ON — click in 3D to position' if self._claw_drag else 'OFF'}")
 
     # ══════════════════════════════════════════════════════════════════
     # VIEW
@@ -819,8 +827,7 @@ class App:
                 a = result["angles"]
                 la = "L:OK" if result.get("left_hand_ok") else "L:--"
                 ra = "R:OK" if result.get("right_hand_ok") else "R:--"
-                wk = " WINK" if result.get("face_ok") else ""
-                self.info_lbl.config(text=f"{la} {ra}{wk}")
+                self.info_lbl.config(text=f"{la} {ra}")
                 g = a.get("J6", 73)
                 self.grip_lbl.config(
                     text=f"Claw:{'OPEN' if g>(SERVO['J6'][0]+SERVO['J6'][1])/2 else 'CLOSED'}")
@@ -981,7 +988,6 @@ class App:
             try: self.tracker.release()
             except: pass
         self.root.destroy()
-
 
 
 def main():
