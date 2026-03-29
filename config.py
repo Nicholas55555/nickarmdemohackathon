@@ -32,7 +32,7 @@ LINK_W = {
 # ── Raised base platform (mm) ───────────────────────────────────────
 # The arm sits on a platform/pedestal that raises it off the ground.
 # Height is adjustable via GUI slider.
-PLATFORM_H     = 100.0    # default height (mm)
+PLATFORM_H     = 200.0    # default height (mm)
 PLATFORM_H_MIN =   0.0
 PLATFORM_H_MAX = 400.0
 PLATFORM_W     =  80.0    # width (X) of the platform box (mm)

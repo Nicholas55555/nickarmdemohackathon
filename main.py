@@ -150,8 +150,8 @@ class MacroEngine:
         return self._run([
             ("angles", dict(home, J2=20, J3=40, J4=0, J6=73), .6),
             ("loop_start", 3, 0),
-            ("angles", dict(home, J1=40, J2=20, J3=40, J4=30, J6=73), .35),
-            ("angles", dict(home, J1=-40, J2=20, J3=40, J4=-30, J6=73), .35),
+            ("angles", dict(home, J1=40, J2=20, J3=140, J4=30, J6=73), .35),
+            ("angles", dict(home, J1=-40, J2=20, J3=140, J4=-30, J6=73), .35),
             ("loop_end", None, 0),
             ("angles", dict(home, J1=0, J2=20, J3=40, J4=0, J6=73), .3),
             ("angles", home, .5),
@@ -199,8 +199,8 @@ class MacroEngine:
         return self._run([
             ("angles", dict(home, J2=30, J3=50), .4),
             ("loop_start", 3, 0),
-            ("angles", dict(home, J2=30, J3=50, J4=40), .2),
-            ("angles", dict(home, J2=30, J3=50, J4=-20), .2),
+            ("angles", dict(home, J2=30, J3=140, J4=40), .2),
+            ("angles", dict(home, J2=30, J3=140, J4=-20), .2),
             ("loop_end", None, 0),
             ("angles", dict(home, J2=30, J3=50, J4=0), .2),
             ("angles", home, .5),
@@ -212,8 +212,8 @@ class MacroEngine:
         return self._run([
             ("angles", dict(home, J2=20, J3=45), .4),
             ("loop_start", 3, 0),
-            ("angles", dict(home, J2=20, J3=45, J5=60), .2),
-            ("angles", dict(home, J2=20, J3=45, J5=-60), .2),
+            ("angles", dict(home, J2=20, J3=80, J5=60), .2),
+            ("angles", dict(home, J2=20, J3=80, J5=-60), .2),
             ("loop_end", None, 0),
             ("angles", dict(home, J2=20, J3=45, J5=0), .2),
             ("angles", home, .5),
