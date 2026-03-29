@@ -1,4 +1,4 @@
-# MARS — Two-Hand Robot Arm Sim
+# MARS — Keyboard Robot Arm Sim
 
 ## Setup
 ```bash
@@ -6,36 +6,37 @@ pip install -r requirements.txt
 python main.py
 ```
 
-## Controls
-| Key   | Action                |
-|-------|-----------------------|
-| Space | Calibrate             |
-| M     | Toggle hand tracking  |
-| V     | Auto/manual 3D view   |
-| L     | Lock/unlock view      |
-| B     | Spawn block           |
-| H     | Home (uses offsets)   |
-| 1-4   | Macro pickup (R/B/G/Y)|
-| Esc   | Quit                  |
+No camera, no MediaPipe — just keyboard and mouse.
 
-## Wink to Close Claw
-FaceMesh tracks both eyes. A wink (one eye closed, other open)
-toggles the claw open/closed. Eye indicators show on the camera feed
-with EAR values. Cooldown prevents rapid toggling.
+## Keyboard Controls (hold for continuous movement)
 
-## Finger Sensitivity
-Two sliders control how responsive each hand is:
-- **L-Hand**: multiplier on left hand's contribution to J1/J2/J3
-- **R-Hand**: multiplier on right hand's contribution to J4/J5
+```
+LEFT HAND (position)     RIGHT HAND (claw)
+─────────────────────    ─────────────────────
+ A / D  →  J1 base       R / F  →  J4 wrist
+ W / S  →  J2 shoulder   T / G  →  J5 rotation
+ Q / E  →  J3 elbow      Z / X  →  J6 claw
+```
 
-Low = sluggish/stable, High = twitchy/precise.
+| Key     | Action                |
+|---------|-----------------------|
+| H       | Home position         |
+| B       | Spawn block           |
+| V       | Auto/manual 3D view   |
+| Shift+L | Lock/unlock view      |
+| 1-4     | Macro pickup (R/B/G/Y)|
+| Esc     | Quit                  |
 
-## Mouse Drag
-- **Claw Drag ON**: horizontal drag = move in view-perpendicular XZ plane,
-  vertical drag = move up/down
-- **Grabbed block**: same controls — drag the block, arm follows via IK
-- View is locked during drag to prevent accidental rotation
+## Speed
+Adjust the **Key Speed** slider (0.5–10.0 °/tick) to control how
+fast held keys move the joints.
 
-## Home Offsets (Dials)
-All dials show offset from default home. Dial at 0 = no change.
-J1/J5 = rotation dials, J2/J3/J4 = pitch dials. Arrows in 3D show direction.
+## Claw Move
+Click **Claw Move: ON** then click anywhere in the 3D view.
+The arm IK-solves to that ground position instantly.
+
+## Files
+- `main.py` — GUI, keyboard, 3D view, physics
+- `arm_kinematics.py` — FK, IK, finger geometry
+- `block_physics.py` — gravity, grab/throw
+- `config.py` — dimensions, servo limits, tuning

@@ -1,19 +1,26 @@
 """
-MARS — Two-Hand Control, Mouse Drag, Per-Joint Home Offsets
+MARS — Keyboard-Controlled Robot Arm Sim
 
-Features:
-  - Drag grabbed blocks in 3D → arm follows via IK
-  - Claw drag mode → mouse controls end-effector position
-  - Per-joint home offsets: J1/J5 dials, J2/J3/J4 text boxes
-  - Arrows in 3D showing each joint's home direction
-  - View cube, auto-track, throttled rendering
+Controls:
+  A/D  → J1 base rotation
+  W/S  → J2 shoulder
+  Q/E  → J3 elbow
+  R/F  → J4 wrist pitch
+  T/G  → J5 wrist rotation
+  Z/X  → J6 claw close/open
+  H    → Home
+  B    → Spawn block
+  1-4  → Macro pickup (Red/Blue/Green/Yellow)
+  V    → Auto/manual 3D view
+  Shift+L → Lock/unlock view
+  Esc  → Quit
+
+Hold keys for continuous movement. Speed adjustable via slider.
 """
 import sys, time, traceback, math
 import tkinter as tk
 from tkinter import ttk
 import numpy as np
-import cv2
-from PIL import Image, ImageTk
 import matplotlib
 matplotlib.use("TkAgg")
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -21,12 +28,10 @@ from matplotlib.figure import Figure
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from mpl_toolkits.mplot3d import proj3d
 
-from config import (SERVO, HOME, CAM_INDEX, CAM_W, CAM_H,
-    J1_J2, J2_J3, J3_J4, J4_J5, J5_J6, CLAW,
+from config import (SERVO, HOME, J1_J2, J2_J3, J3_J4, J4_J5, J5_J6, CLAW,
     PLATFORM_H, PLATFORM_H_MIN, PLATFORM_H_MAX, PLATFORM_W, PLATFORM_D,
     BG, FG, ACCENT, ACCENT2, ACCENT3, PANEL)
 from arm_kinematics import ArmKinematics
-from body_tracker import HandPairTracker, detect_camera_fov
 from block_physics import BlockPhysics
 
 def _hex_rgb(h):
@@ -69,32 +74,26 @@ class DegreeDial(tk.Canvas):
             self.create_line(cx+(r-4)*math.cos(rad), cy+(r-4)*math.sin(rad),
                              cx+r*math.cos(rad), cy+r*math.sin(rad),
                              fill="#475569", width=1)
-        # Labels: show signed values at cardinal points
         for d, lbl in [(0,"0"),(90,"+90"),(180,"±180"),(270,"-90")]:
             rad = math.radians(d - 90)
             self.create_text(cx+(r-14)*math.cos(rad), cy+(r-14)*math.sin(rad),
                              text=lbl, fill="#555", font=("Consolas", 5))
-        # Needle — map value (-180..180) to visual angle (0°=top)
-        vis_angle = self._val  # -180..180 → visual: 0=top, +90=right, -90=left
+        vis_angle = self._val
         rad = math.radians(vis_angle - 90)
         self.create_line(cx, cy, cx+(r-12)*math.cos(rad), cy+(r-12)*math.sin(rad),
                          fill=ACCENT, width=2, arrow=tk.LAST)
         self.create_oval(cx-2, cy-2, cx+2, cy+2, fill=ACCENT, outline="")
-        # Value + label text below
         txt = f"{self._label} {self._val:+.0f}°" if self._label else f"{self._val:+.0f}°"
         self.create_text(cx, self._sz + 8, text=txt,
                          fill=ACCENT, font=("Consolas", 7, "bold"))
 
     def _click(self, e):
         raw = math.degrees(math.atan2(e.y - self._cy, e.x - self._cx)) + 90
-        # Convert 0..360 to -180..180
         raw = raw % 360
-        if raw > 180:
-            raw -= 360
+        if raw > 180: raw -= 360
         self._val = round(max(-180, min(180, raw)))
         self._draw()
-        if self._cmd:
-            self._cmd(self._val)
+        if self._cmd: self._cmd(self._val)
 
     def get(self): return self._val
     def set(self, v): self._val = max(-180, min(180, round(v))); self._draw()
@@ -146,51 +145,52 @@ class MacroEngine:
 VIEW_PRESETS = {"Front":(20,-90),"Back":(20,90),"Left":(20,0),
                 "Right":(20,-180),"Top":(85,-90),"Iso":(30,-60)}
 
+# Key → (joint, direction)
+KEY_MAP = {
+    'a': ('J1', -1), 'd': ('J1', +1),
+    'w': ('J2', -1), 's': ('J2', +1),
+    'q': ('J3', -1), 'e': ('J3', +1),
+    'r': ('J4', -1), 'f': ('J4', +1),
+    't': ('J5', -1), 'g': ('J5', +1),
+    'z': ('J6', -1), 'x': ('J6', +1),
+}
+
 
 # ══════════════════════════════════════════════════════════════════════
 class App:
-    _3D_THROTTLE = 3
 
     def __init__(self, root):
         self.root = root
-        root.title("MARS — Two-Hand Robot Arm Sim")
-        root.configure(bg=BG); root.geometry("1600x920"); root.minsize(1100,650)
+        root.title("MARS — Keyboard Robot Arm Sim")
+        root.configure(bg=BG); root.geometry("1200x850"); root.minsize(900,600)
         root.report_callback_exception = self._on_err
 
         self.arm = ArmKinematics()
-        self.tracker = None; self._tracker_err = None
-        try: self.tracker = HandPairTracker()
-        except Exception as e: self._tracker_err = str(e)
-
-        self.cap = None; self.running = False; self.tracking_on = False
-        self._last = None; self._ftimes = []; self._last_time = time.time()
-        self._frame_count = 0
-
         self.physics = BlockPhysics(); self.physics.spawn_default_set()
         self.macro = MacroEngine(self.arm, self.physics)
 
-        # View state
         self._view_elev = 25.; self._view_azim = -60.
         self._auto_track = True; self._drag_active = False
-        self._view_locked = False  # locks perspective completely
+        self._view_locked = False
+        self._mpl_rotation_disabled = False
 
-        # Mouse interaction modes
-        self._claw_drag = False     # mouse drags claw via IK
-        self._block_drag = False    # mouse drags a grabbed block
-        self._mouse_press_pos = None
-        self._drag_start_ee = None
-        self._mpl_rotation_disabled = False  # track mpl rotation state
+        # Claw move mode
+        self._claw_move = False
 
-        # Per-joint home offsets (degrees)
+        # Per-joint home offsets
         self._homes = {j: SERVO[j][2] for j in [f"J{i}" for i in range(1,7)]}
 
+        # Held keys for continuous movement
+        self._keys_held = set()
+        self._move_speed = 2.0  # degrees per tick
+
+        self._last_time = time.time()
+
         self._style(); self._build(); self._init_3d(); self._draw_arm()
-        if self._tracker_err:
-            self._log("Tracker FAILED:")
-            for l in self._tracker_err.split("\n"):
-                if l.strip(): self._log(f"  {l.strip()}")
-        else: self._log("Ready — two-hand control")
-        self._physics_tick()
+        self._log("Ready — keyboard control")
+        self._log("A/D=J1  W/S=J2  Q/E=J3")
+        self._log("R/F=J4  T/G=J5  Z/X=J6")
+        self._tick()
 
     def _style(self):
         s = ttk.Style(); s.theme_use("clam")
@@ -211,35 +211,22 @@ class App:
     def _build(self):
         top = ttk.Frame(self.root, style="D.TFrame")
         top.pack(fill=tk.X, padx=10, pady=(3,1))
-        ttk.Label(top, text="MARS", style="T.TLabel").pack(side=tk.LEFT)
-        self.fps_lbl = ttk.Label(top, text="", style="D.TLabel")
-        self.fps_lbl.pack(side=tk.RIGHT)
+        ttk.Label(top, text="MARS — Keyboard Control", style="T.TLabel").pack(side=tk.LEFT)
 
         body = ttk.Frame(self.root, style="D.TFrame")
         body.pack(fill=tk.BOTH, expand=True, padx=10, pady=2)
-        body.columnconfigure(0, weight=3); body.columnconfigure(1, weight=4)
-        body.columnconfigure(2, weight=2); body.rowconfigure(0, weight=1)
+        body.columnconfigure(0, weight=5); body.columnconfigure(1, weight=2)
+        body.rowconfigure(0, weight=1)
 
-        # LEFT — camera
-        lf = ttk.LabelFrame(body, text=" Camera ", style="D.TLabelframe")
-        lf.grid(row=0, column=0, sticky="nsew", padx=(0,3))
-        self.cam_lbl = tk.Label(lf, bg="#0d1117")
-        self.cam_lbl.pack(fill=tk.BOTH, expand=True, padx=3, pady=3)
-        ir = ttk.Frame(lf, style="D.TFrame"); ir.pack(fill=tk.X, padx=3, pady=(0,3))
-        self.info_lbl = ttk.Label(ir, text="Waiting...", style="D.TLabel")
-        self.info_lbl.pack(side=tk.LEFT)
-        self.grip_lbl = ttk.Label(ir, text="", style="D.TLabel")
-        self.grip_lbl.pack(side=tk.RIGHT)
-
-        # CENTRE — 3D
+        # LEFT — 3D view (bigger now without camera panel)
         cf = ttk.LabelFrame(body, text=" 3D View ", style="D.TLabelframe")
-        cf.grid(row=0, column=1, sticky="nsew", padx=3)
-        self.fig = Figure(figsize=(5,4), dpi=100, facecolor=BG)
+        cf.grid(row=0, column=0, sticky="nsew", padx=(0,3))
+        self.fig = Figure(figsize=(7,5), dpi=100, facecolor=BG)
         self.canvas3d = FigureCanvasTkAgg(self.fig, master=cf)
         self.canvas3d.get_tk_widget().pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
         self.ee_lbl = ttk.Label(cf, text="EE: --", style="S.TLabel")
         self.ee_lbl.pack(fill=tk.X, padx=3, pady=(0,1))
-        # View cube row
+        # View cube
         vcf = ttk.Frame(cf, style="D.TFrame"); vcf.pack(fill=tk.X, padx=3, pady=(0,2))
         for nm in VIEW_PRESETS:
             tk.Button(vcf, text=nm, font=("Consolas",7,"bold"), bg="#1e293b",
@@ -255,9 +242,14 @@ class App:
                                    padx=3, pady=1, command=self._toggle_lock_view)
         self.btn_lock.pack(side=tk.RIGHT, padx=1)
 
+        # Keyboard help below view
+        help_text = "A/D→J1  W/S→J2  Q/E→J3  |  R/F→J4  T/G→J5  Z/X→J6  |  H=Home  B=Block  1-4=Macro"
+        ttk.Label(cf, text=help_text, style="D.TLabel",
+                  font=("Consolas", 8)).pack(fill=tk.X, padx=3, pady=(0,2))
+
         # RIGHT — controls (scrollable)
         scroll_container = ttk.Frame(body, style="D.TFrame")
-        scroll_container.grid(row=0, column=2, sticky="nsew", padx=(3,0))
+        scroll_container.grid(row=0, column=1, sticky="nsew", padx=(3,0))
         scroll_container.rowconfigure(0, weight=1)
         scroll_container.columnconfigure(0, weight=1)
         rf_canvas = tk.Canvas(scroll_container, bg=BG, highlightthickness=0)
@@ -298,18 +290,27 @@ class App:
 
         bf = ttk.LabelFrame(rf, text=" Controls ", style="D.TLabelframe")
         bf.pack(fill=tk.X, pady=(0,2))
-        self.btn_cam = btn(bf, "Start Camera", "#1b4332", self._toggle_cam)
-        self.btn_track = btn(bf, "Track (M)", "#1a3a5c", self._toggle_track, state=tk.DISABLED)
-        self.btn_cal = btn(bf, "Calibrate (Space)", "#5c3a1a", self._calibrate, state=tk.DISABLED)
         self.btn_home = btn(bf, "Home (H)", "#333", self._go_home)
-        self.btn_claw_drag = btn(bf, "Claw Move: OFF", "#2d2d3a", self._toggle_claw_move)
+        self.btn_claw_move = btn(bf, "Claw Move: OFF", "#2d2d3a", self._toggle_claw_move)
 
-        # ── Home Offsets — all joints get dials ─────────────────────────
+        # ── Speed slider ─────────────────────────────────────────────
+        spf = ttk.LabelFrame(rf, text=" Key Speed ", style="D.TLabelframe")
+        spf.pack(fill=tk.X, pady=2)
+        spr = ttk.Frame(spf, style="D.TFrame"); spr.pack(fill=tk.X, padx=4, pady=2)
+        self.speed_lbl = ttk.Label(spr, text="2.0°/tick", width=8,
+                                    style="D.TLabel", font=("Consolas",8))
+        self.speed_lbl.pack(side=tk.RIGHT)
+        self.speed_slider = tk.Scale(spr, from_=0.5, to=10.0, resolution=0.5,
+            orient=tk.HORIZONTAL, bg=BG, fg=FG, troughcolor=PANEL,
+            highlightbackground=BG, activebackground="#4a7c59", length=80,
+            showvalue=False, command=self._on_speed)
+        self.speed_slider.set(2.0)
+        self.speed_slider.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
+
+        # ── Home Offsets ─────────────────────────────────────────────
         hf = ttk.LabelFrame(rf, text=" Home Offsets ", style="D.TLabelframe")
         hf.pack(fill=tk.X, pady=2)
-
         self._home_dials = {}
-        # Row 1: J1, J5 (rotation joints)
         dr1 = ttk.Frame(hf, style="D.TFrame")
         dr1.pack(fill=tk.X, padx=2, pady=1)
         for jn, lbl in [("J1", "J1"), ("J5", "J5")]:
@@ -319,8 +320,6 @@ class App:
                            command=lambda v, j=jn: self._on_dial(j, v))
             d.pack(padx=1)
             self._home_dials[jn] = d
-
-        # Row 2: J2, J3, J4 (pitch joints)
         dr2 = ttk.Frame(hf, style="D.TFrame")
         dr2.pack(fill=tk.X, padx=2, pady=1)
         for jn, lbl in [("J2", "J2"), ("J3", "J3"), ("J4", "J4")]:
@@ -330,44 +329,6 @@ class App:
                            command=lambda v, j=jn: self._on_dial(j, v))
             d.pack(padx=1)
             self._home_dials[jn] = d
-
-        # ── Forearm Sensitivity (rotations only) ─────────────────────
-        fsf = ttk.LabelFrame(rf, text=" Forearm Sens. ", style="D.TLabelframe")
-        fsf.pack(fill=tk.X, pady=2)
-        self._sens_sliders = {}
-        for jn, lbl, default in [("J1", "J1 Base", 70), ("J5", "J5 Roll", 70)]:
-            r = ttk.Frame(fsf, style="D.TFrame")
-            r.pack(fill=tk.X, padx=4, pady=1)
-            ttk.Label(r, text=f"{lbl}:", width=8, style="D.TLabel",
-                      font=("Consolas", 7)).pack(side=tk.LEFT)
-            sl = ttk.Label(r, text=f"{default}%", width=4, style="D.TLabel",
-                           font=("Consolas", 7))
-            sl.pack(side=tk.RIGHT)
-            sc = tk.Scale(r, from_=0, to=100, orient=tk.HORIZONTAL, bg=BG,
-                          fg=FG, troughcolor=PANEL, highlightbackground=BG,
-                          activebackground="#4a7c59", length=70, showvalue=False,
-                          command=lambda v, j=jn, l=sl: self._on_sens(j, int(float(v)), l))
-            sc.set(default)
-            sc.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=1)
-            self._sens_sliders[jn] = sc
-
-        # ── Finger Sensitivity (joint tracking) ──────────────────────
-        fgf = ttk.LabelFrame(rf, text=" Finger Sens. ", style="D.TLabelframe")
-        fgf.pack(fill=tk.X, pady=2)
-        for key, lbl, default in [("left", "L J2/J3", 50), ("right", "R J4", 50)]:
-            r = ttk.Frame(fgf, style="D.TFrame")
-            r.pack(fill=tk.X, padx=4, pady=1)
-            ttk.Label(r, text=f"{lbl}:", width=8, style="D.TLabel",
-                      font=("Consolas", 7)).pack(side=tk.LEFT)
-            sl = ttk.Label(r, text=f"{default}%", width=4, style="D.TLabel",
-                           font=("Consolas", 7))
-            sl.pack(side=tk.RIGHT)
-            sc = tk.Scale(r, from_=0, to=100, orient=tk.HORIZONTAL, bg=BG,
-                          fg=FG, troughcolor=PANEL, highlightbackground=BG,
-                          activebackground="#59794a", length=70, showvalue=False,
-                          command=lambda v, k=key, l=sl: self._on_finger_sens(k, int(float(v)), l))
-            sc.set(default)
-            sc.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=1)
 
         # ── Platform ─────────────────────────────────────────────────
         pf = ttk.LabelFrame(rf, text=" Platform ", style="D.TLabelframe")
@@ -387,11 +348,12 @@ class App:
         sf = ttk.LabelFrame(rf, text=" Servos ", style="D.TLabelframe")
         sf.pack(fill=tk.X, pady=2)
         self.sliders = {}; self.slbl = {}
-        jl = {"J1":"J1","J2":"J2","J3":"J3","J4":"J4","J5":"J5","J6":"J6"}
+        jl = {"J1":"J1 A/D","J2":"J2 W/S","J3":"J3 Q/E",
+              "J4":"J4 R/F","J5":"J5 T/G","J6":"J6 Z/X"}
         for jn in ArmKinematics.JOINTS:
             lo,hi,hm = SERVO[jn]
             r = ttk.Frame(sf, style="D.TFrame"); r.pack(fill=tk.X, padx=3, pady=0)
-            ttk.Label(r, text=f"{jl[jn]}:", width=3, style="D.TLabel",
+            ttk.Label(r, text=f"{jl[jn]}:", width=7, style="D.TLabel",
                       font=("Consolas",7)).pack(side=tk.LEFT)
             vl = ttk.Label(r, text=f"{hm:.0f}", width=4, style="D.TLabel",
                            font=("Consolas",7))
@@ -418,160 +380,99 @@ class App:
         btn(mf, "Spawn (B)", "#3a2d3a", self._spawn_block)
         btn(mf, "Clear", "#3a2d2d", self._clear_blocks)
 
+        # ── Active keys display ──────────────────────────────────────
+        self.keys_lbl = ttk.Label(rf, text="Keys: -", style="D.TLabel",
+                                   font=("Consolas", 9))
+        self.keys_lbl.pack(fill=tk.X, padx=4, pady=2)
+
         # ── Log ──────────────────────────────────────────────────────
         logf = ttk.LabelFrame(rf, text=" Log ", style="D.TLabelframe")
         logf.pack(fill=tk.X, pady=(2,0))
         self.log_w = tk.Text(logf, bg="#0d1117", fg="#58a6ff",
-                             font=("Consolas",7), height=5, width=20,
+                             font=("Consolas",7), height=6, width=20,
                              wrap=tk.WORD, state=tk.DISABLED, relief=tk.FLAT)
         self.log_w.pack(fill=tk.X, padx=3, pady=3)
 
     # ══════════════════════════════════════════════════════════════════
-    # 3D INIT & MOUSE DRAG
+    # 3D
     # ══════════════════════════════════════════════════════════════════
-
     def _init_3d(self):
         self.ax = self.fig.add_subplot(111, projection="3d")
         self.ax.set_facecolor("#0d1117")
         self.fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
         self.canvas3d.mpl_connect('button_press_event', self._on_3d_press)
         self.canvas3d.mpl_connect('button_release_event', self._on_3d_release)
-        self.canvas3d.mpl_connect('motion_notify_event', self._on_3d_motion)
 
     def _disable_mpl_rotation(self):
-        """Disable matplotlib's built-in 3D drag rotation."""
         if not self._mpl_rotation_disabled:
             try: self.ax.disable_mouse_rotation()
             except: pass
             self._mpl_rotation_disabled = True
 
     def _enable_mpl_rotation(self):
-        """Re-enable matplotlib's built-in 3D drag rotation."""
         if self._mpl_rotation_disabled:
             try: self.ax.mouse_init()
             except: pass
             self._mpl_rotation_disabled = False
 
     def _screen_to_ground(self, event):
-        """Project a screen click onto the ground plane via 3D projection."""
-        if event.x is None or event.y is None:
-            return None
-        ax = self.ax
-        M = ax.get_proj()
-        ph = self.arm.platform_h
-        best_dist = float('inf')
-        best_x = best_z = 0.0
+        if event.x is None or event.y is None: return None
+        ax = self.ax; M = ax.get_proj(); ph = self.arm.platform_h
+        best_dist = float('inf'); best_x = best_z = 0.0
         for gx in np.linspace(-250, 250, 26):
             for gz in np.linspace(-250, 250, 26):
                 x2, y2, _ = proj3d.proj_transform(gx, gz, ph, M)
                 dx, dy = ax.transData.transform((x2, y2))
                 d = (dx - event.x)**2 + (dy - event.y)**2
-                if d < best_dist:
-                    best_dist = d; best_x, best_z = gx, gz
+                if d < best_dist: best_dist = d; best_x, best_z = gx, gz
         for gx in np.linspace(best_x-20, best_x+20, 21):
             for gz in np.linspace(best_z-20, best_z+20, 21):
                 x2, y2, _ = proj3d.proj_transform(gx, gz, ph, M)
                 dx, dy = ax.transData.transform((x2, y2))
                 d = (dx - event.x)**2 + (dy - event.y)**2
-                if d < best_dist:
-                    best_dist = d; best_x, best_z = gx, gz
+                if d < best_dist: best_dist = d; best_x, best_z = gx, gz
         return best_x, best_z
 
     def _on_3d_press(self, event):
-        if event.button != 1:
-            return
-        # Claw Move mode → IK to clicked ground point
-        if self._claw_drag:
+        if event.button != 1: return
+        if self._claw_move:
             result = self._screen_to_ground(event)
             if result:
                 gx, gz = result
-                # Clamp to arm's workspace radius
                 r = math.sqrt(gx**2 + gz**2)
-                max_r = J2_J3 + J3_J4 - 30  # leave margin
+                max_r = J2_J3 + J3_J4 - 30
                 if r > max_r and r > 1:
-                    gx *= max_r / r
-                    gz *= max_r / r
-                # Target Y: ground level + block size (gripper pointing down)
+                    gx *= max_r / r; gz *= max_r / r
                 target = np.array([gx, 25.0, gz])
                 ik = self.arm.solve_angles_for_position(target)
                 if ik:
-                    for j, v in ik.items():
-                        self.arm.set_angle(j, v)
+                    for j, v in ik.items(): self.arm.set_angle(j, v)
                     self.arm.enforce_ground_constraint()
                     self._sync_sliders()
                     self._log(f"Move → X={gx:.0f} Z={gz:.0f}")
-                else:
-                    self._log("Unreachable")
+                else: self._log("Unreachable")
                 self._draw_arm()
             return
-        # Block drag (grabbed block)
-        grabbed = [b for b in self.physics.blocks if b.grabbed]
-        if grabbed:
-            self._block_drag = True
-            self._drag_start_ee = grabbed[0].pos.copy()
-            self._mouse_press_pos = (event.x, event.y)
-            self._disable_mpl_rotation()
-            return
-        # Normal view rotation
         if not self._view_locked:
-            self._drag_active = True
-            self._enable_mpl_rotation()
-        else:
-            self._disable_mpl_rotation()
+            self._drag_active = True; self._enable_mpl_rotation()
+        else: self._disable_mpl_rotation()
 
     def _on_3d_release(self, event):
-        was_ik = self._block_drag
         self._drag_active = False
-        self._block_drag = False
-        self._mouse_press_pos = None
-        if was_ik and not self._view_locked:
-            self._enable_mpl_rotation()
-
-    def _on_3d_motion(self, event):
-        if not self._block_drag or self._mouse_press_pos is None:
-            return
-        if event.x is None or event.y is None:
-            return
-        dx = (event.x - self._mouse_press_pos[0])
-        dy = (event.y - self._mouse_press_pos[1])
-        azim_rad = math.radians(self._view_azim)
-        right_x = -math.sin(azim_rad)
-        right_z = math.cos(azim_rad)
-        scale = 1.2
-        move_x = dx * right_x * scale
-        move_z = dx * right_z * scale
-        move_y = -dy * scale
-        target = self._drag_start_ee + np.array([move_x, move_y, move_z])
-        target[1] = max(5, target[1])
-        ik = self.arm.solve_angles_for_position(target)
-        if ik:
-            for j, v in ik.items():
-                self.arm.set_angle(j, v)
-            self.arm.enforce_ground_constraint()
-            self._sync_sliders()
-            self._draw_arm()
 
     def _toggle_claw_move(self):
-        self._claw_drag = not self._claw_drag
-        if self._claw_drag:
-            self._disable_mpl_rotation()
-        else:
-            if not self._view_locked:
-                self._enable_mpl_rotation()
-        self.btn_claw_drag.config(
-            text=f"Claw Move: {'ON' if self._claw_drag else 'OFF'}",
-            bg="#3a5c1a" if self._claw_drag else "#2d2d3a")
-        self._log(f"Claw move {'ON — click in 3D to position' if self._claw_drag else 'OFF'}")
-
-    # ══════════════════════════════════════════════════════════════════
-    # VIEW
-    # ══════════════════════════════════════════════════════════════════
+        self._claw_move = not self._claw_move
+        if self._claw_move: self._disable_mpl_rotation()
+        elif not self._view_locked: self._enable_mpl_rotation()
+        self.btn_claw_move.config(
+            text=f"Claw Move: {'ON' if self._claw_move else 'OFF'}",
+            bg="#3a5c1a" if self._claw_move else "#2d2d3a")
+        self._log(f"Claw move {'ON — click 3D' if self._claw_move else 'OFF'}")
 
     def _set_view_preset(self, name):
         if name in VIEW_PRESETS:
             self._view_elev, self._view_azim = VIEW_PRESETS[name]
-            self._auto_track = False
-            self._view_locked = True
+            self._auto_track = False; self._view_locked = True
             self._disable_mpl_rotation()
             self.btn_view.config(text="MANUAL", bg="#3a2d2d")
             self.btn_lock.config(text="LOCKED", bg="#5c3a1a", fg="white")
@@ -581,8 +482,7 @@ class App:
         self._auto_track = not self._auto_track
         if self._auto_track:
             self._view_locked = False
-            if not self._claw_drag:
-                self._enable_mpl_rotation()
+            if not self._claw_move: self._enable_mpl_rotation()
             self.btn_lock.config(text="LOCK", bg="#2d2d2d", fg="#888")
         self.btn_view.config(text="AUTO" if self._auto_track else "MANUAL",
                              bg="#2d3a2d" if self._auto_track else "#3a2d2d")
@@ -590,16 +490,12 @@ class App:
     def _toggle_lock_view(self):
         self._view_locked = not self._view_locked
         if self._view_locked:
-            self._auto_track = False
-            self._disable_mpl_rotation()
+            self._auto_track = False; self._disable_mpl_rotation()
             self.btn_lock.config(text="LOCKED", bg="#5c3a1a", fg="white")
             self.btn_view.config(text="MANUAL", bg="#3a2d2d")
-            self._log("View LOCKED")
         else:
-            if not self._claw_drag:
-                self._enable_mpl_rotation()
+            if not self._claw_move: self._enable_mpl_rotation()
             self.btn_lock.config(text="LOCK", bg="#2d2d2d", fg="#888")
-            self._log("View unlocked")
 
     def _compute_best_view(self, pts):
         pp = np.array([[p[0],p[2],p[1]] for p in pts])
@@ -608,31 +504,21 @@ class App:
         azim = (math.degrees(math.atan2(rg[1],rg[0]))-90) if rl>1e-3 else self._view_azim
         hs = [p[2] for p in pp]; hr = max(hs)-min(hs)
         v = hr/(hr+max(rl,1.)); elev = 15+v*35
-        cn = pp - np.mean(pp,axis=0)
-        try:
-            _,S,_ = np.linalg.svd(cn, full_matrices=False)
-            if len(S)>1 and S[1]/(S[0]+1e-9)<.15: elev = max(elev,35)
-        except: pass
         return max(8,min(65,elev)), azim
 
     # ══════════════════════════════════════════════════════════════════
-    # 3D DRAW
-    # ══════════════════════════════════════════════════════════════════
-
     def _draw_arm(self):
         try:
             ax = self.ax
-            # Capture view before clear to prevent jump-back
             if hasattr(ax,'elev') and hasattr(ax,'azim'):
                 if (not self._auto_track or self._drag_active) and not self._view_locked:
-                    self._view_elev = ax.elev
-                    self._view_azim = ax.azim
+                    self._view_elev = ax.elev; self._view_azim = ax.azim
 
             ax.clear(); ax.set_facecolor("#0d1117")
             pts = self.arm.forward_kinematics(); ph = self.arm.platform_h
             def p(v): return (v[0], v[2], v[1])
 
-            # ── Platform ──────────────────────────────────────────────
+            # Platform
             if ph > 0.5:
                 hw,hd = PLATFORM_W/2., PLATFORM_D/2.
                 c = [np.array([dx,dy,dz])
@@ -651,33 +537,22 @@ class App:
             ax.add_collection3d(Poly3DCollection([list(zip(bx,by,bz))],
                 alpha=.3, facecolor="#1e3a5f", edgecolor="#475569"))
 
-            # ── Home direction arrows ─────────────────────────────────
+            # Home arrows
             yaw = np.radians(self.arm.angles["J1"])
-
-            # J1 arrow — FK: forward = (cos(yaw), 0, sin(yaw)) → plot (cos,sin,0)
             j1_home = self._homes.get("J1", 0)
             j1_rad = math.radians(j1_home)
             alen = 65
-            arrow_px = alen * math.cos(j1_rad)
-            arrow_py = alen * math.sin(j1_rad)
-            a0_px = arrow_px * 0.25; a0_py = arrow_py * 0.25
-            ax.plot([a0_px, arrow_px], [a0_py, arrow_py], [ph, ph],
-                    color="#facc15", lw=2.5, alpha=.8)
-            back_px = arrow_px - 12*math.cos(j1_rad)
-            back_py = arrow_py - 12*math.sin(j1_rad)
-            pp_x = -8*math.sin(j1_rad); pp_y = 8*math.cos(j1_rad)
-            ax.plot([arrow_px, back_px+pp_x], [arrow_py, back_py+pp_y],
-                    [ph, ph], color="#facc15", lw=2, alpha=.6)
-            ax.plot([arrow_px, back_px-pp_x], [arrow_py, back_py-pp_y],
-                    [ph, ph], color="#facc15", lw=2, alpha=.6)
-            ax.text(arrow_px*1.15, arrow_py*1.15, ph+6,
-                    "J1H", color="#facc15", fontsize=5, ha="center", alpha=.5)
+            apx = alen*math.cos(j1_rad); apy = alen*math.sin(j1_rad)
+            ax.plot([apx*.25,apx],[apy*.25,apy],[ph,ph], color="#facc15", lw=2.5, alpha=.8)
+            bpx = apx-12*math.cos(j1_rad); bpy = apy-12*math.sin(j1_rad)
+            ppx = -8*math.sin(j1_rad); ppy = 8*math.cos(j1_rad)
+            ax.plot([apx,bpx+ppx],[apy,bpy+ppy],[ph,ph], color="#facc15", lw=2, alpha=.6)
+            ax.plot([apx,bpx-ppx],[apy,bpy-ppy],[ph,ph], color="#facc15", lw=2, alpha=.6)
+            ax.text(apx*1.15, apy*1.15, ph+6, "J1H", color="#facc15", fontsize=5, ha="center", alpha=.5)
 
-            # J2-J4 arrows in arm's swing plane
             arm_fwd = np.array([math.cos(yaw), 0, math.sin(yaw)])
             arm_up = np.array([0, 1, 0])
-            arrow_joints = [("J2",1,"#22d3ee",25),("J3",2,"#22d3ee",20),("J4",3,"#a78bfa",18)]
-            for jn, idx, col, al in arrow_joints:
+            for jn, idx, col, al in [("J2",1,"#22d3ee",25),("J3",2,"#22d3ee",20),("J4",3,"#a78bfa",18)]:
                 offset = self._homes.get(jn, SERVO[jn][2]) - SERVO[jn][2]
                 if abs(offset) > 0.5:
                     jpos = pts[idx]
@@ -685,51 +560,44 @@ class App:
                     direction = arm_fwd*math.sin(off_rad) + arm_up*math.cos(off_rad)
                     tip = jpos + direction * al
                     s = p(jpos); e = p(tip)
-                    ax.plot([s[0],e[0]],[s[1],e[1]],[s[2],e[2]],color=col,lw=1.8,alpha=.6)
-                    ax.text(e[0],e[1],e[2]+5,f"{jn}H",color=col,fontsize=4,ha="center",alpha=.5)
+                    ax.plot([s[0],e[0]],[s[1],e[1]],[s[2],e[2]], color=col, lw=1.8, alpha=.6)
+                    ax.text(e[0],e[1],e[2]+5, f"{jn}H", color=col, fontsize=4, ha="center", alpha=.5)
 
-            # J5 arrow (roll direction at J5 position)
+            # J5 arrow
             j5_home = self._homes.get("J5", 0)
-            if abs(j5_home) > 0.5:
+            if abs(j5_home) > 0.5 and len(pts) > 4:
                 j5_pos = pts[4]
                 roll_rad = math.radians(j5_home)
-                roll_dir = np.array([-math.sin(yaw)*math.cos(roll_rad),
-                                      math.sin(roll_rad),
-                                      math.cos(yaw)*math.cos(roll_rad)])
+                perp = np.array([-math.sin(yaw), 0, math.cos(yaw)])
+                roll_dir = perp * math.cos(roll_rad) + arm_up * math.sin(roll_rad)
                 tip5 = j5_pos + roll_dir * 22
                 s5 = p(j5_pos); e5 = p(tip5)
-                ax.plot([s5[0],e5[0]],[s5[1],e5[1]],[s5[2],e5[2]],
-                        color="#fb923c", lw=1.8, alpha=.6)
-                ax.text(e5[0],e5[1],e5[2]+5, "J5H", color="#fb923c", fontsize=4,
-                        ha="center", alpha=.5)
+                ax.plot([s5[0],e5[0]],[s5[1],e5[1]],[s5[2],e5[2]], color="#fb923c", lw=1.8, alpha=.6)
+                ax.text(e5[0],e5[1],e5[2]+5, "J5H", color="#fb923c", fontsize=4, ha="center", alpha=.5)
 
-            # ── Link boxes ────────────────────────────────────────────
+            # Link boxes
             for lk in self.arm.link_boxes():
                 fs = _box_faces(lk["start"], lk["end"], lk["width"])
                 if fs:
                     rgb = _hex_rgb(lk["color"])
-                    ax.add_collection3d(Poly3DCollection(
-                        [[p(v) for v in f] for f in fs],
-                        alpha=lk["alpha"], facecolor=rgb,
-                        edgecolor=(*rgb,.6), linewidths=.4))
+                    ax.add_collection3d(Poly3DCollection([[p(v) for v in f] for f in fs],
+                        alpha=lk["alpha"], facecolor=rgb, edgecolor=(*rgb,.6), linewidths=.4))
 
             # Skeleton + joints
-            xs = [pt[0] for pt in pts]; ys = [pt[2] for pt in pts]; zs = [pt[1] for pt in pts]
+            xs=[pt[0] for pt in pts]; ys=[pt[2] for pt in pts]; zs=[pt[1] for pt in pts]
             ax.plot(xs,ys,zs, color="white", lw=.8, alpha=.3, ls="--")
-            jc = ["#475569","#0ea5e9","#0ea5e9","#6366f1","#a78bfa","#ec4899","#f472b6"]
+            jc=["#475569","#0ea5e9","#0ea5e9","#6366f1","#a78bfa","#ec4899","#f472b6"]
             for i,(x,y,z) in enumerate(zip(xs,ys,zs)):
                 ax.scatter(x,y,z, color=jc[min(i,6)], s=40 if i<2 else 55-i*5,
                            edgecolors="white", linewidths=.2, zorder=5, depthshade=True)
 
-            # ── Finger boxes ──────────────────────────────────────────
+            # Finger boxes
             for fb in self.arm.finger_boxes():
                 fs = _box_faces(fb["start"], fb["end"], fb["width"])
                 if fs:
                     rgb = _hex_rgb(fb["color"])
-                    ax.add_collection3d(Poly3DCollection(
-                        [[p(v) for v in f] for f in fs],
-                        alpha=fb["alpha"], facecolor=rgb,
-                        edgecolor=(*rgb,.7), linewidths=.5))
+                    ax.add_collection3d(Poly3DCollection([[p(v) for v in f] for f in fs],
+                        alpha=fb["alpha"], facecolor=rgb, edgecolor=(*rgb,.7), linewidths=.5))
 
             fg = self.arm.get_finger_geometry()
             for tk_ in ["left_tip","right_tip"]:
@@ -738,24 +606,20 @@ class App:
                         color="#f472b6", lw=.8, alpha=.4, ls="--")
             gc = fg["grip_center"]
             gc_col = "#51cf66" if fg["is_closed"] else "#ff6b6b"
-            ax.scatter(*p(gc), color=gc_col, s=25, marker="o", zorder=7,
-                       depthshade=False, alpha=.6)
+            ax.scatter(*p(gc), color=gc_col, s=25, marker="o", zorder=7, depthshade=False, alpha=.6)
 
             # Joint axes
             for ja in self.arm.joint_axes():
                 av = ja["axis"]*ja["length"]
                 s = p(ja["pos"]-av*.5); e = p(ja["pos"]+av*.5)
-                ax.plot([s[0],e[0]],[s[1],e[1]],[s[2],e[2]],
-                        color=ja["color"], lw=1.2, alpha=.5)
+                ax.plot([s[0],e[0]],[s[1],e[1]],[s[2],e[2]], color=ja["color"], lw=1.2, alpha=.5)
 
             # Blocks
             for bs in self.physics.get_block_states():
                 brgb = _hex_rgb(bs["color"]); ba = .7 if bs["grabbed"] else .5
-                ax.add_collection3d(Poly3DCollection(
-                    [[p(v) for v in f] for f in bs["faces"]],
+                ax.add_collection3d(Poly3DCollection([[p(v) for v in f] for f in bs["faces"]],
                     alpha=ba, facecolor=brgb,
-                    edgecolor=(*brgb,.4) if not bs["grabbed"] else (1,1,1,.3),
-                    linewidths=.4))
+                    edgecolor=(*brgb,.4) if not bs["grabbed"] else (1,1,1,.3), linewidths=.4))
                 bp = bs["pos"]
                 ax.text(p(bp)[0],p(bp)[1],p(bp)[2]+bs["size"]+6,
                         bs["label"], color=bs["color"], fontsize=4, ha="center", alpha=.7)
@@ -765,11 +629,10 @@ class App:
                 ax.plot([g,g],[-200,200],[0,0], color="#1e293b", lw=.15, alpha=.3)
                 ax.plot([-200,200],[g,g],[0,0], color="#1e293b", lw=.15, alpha=.3)
 
-            # Workspace arc
             reach = J2_J3+J3_J4+J4_J5
             tw = np.linspace(-np.pi/2, np.pi/2, 50)
-            ax.plot(reach*np.cos(tw), reach*np.sin(tw),
-                    np.full(50,ph+J1_J2), color="#334155", lw=.5, ls=":", alpha=.2)
+            ax.plot(reach*np.cos(tw), reach*np.sin(tw), np.full(50,ph+J1_J2),
+                    color="#334155", lw=.5, ls=":", alpha=.2)
 
             L = 280; zt = max(L+80, ph+L)
             ax.set_xlim(-L,L); ax.set_ylim(-L,L); ax.set_zlim(-20,zt)
@@ -799,167 +662,75 @@ class App:
             print(f"[3D] {e}", file=sys.stderr)
 
     # ══════════════════════════════════════════════════════════════════
-    # CAMERA LOOP
+    # MAIN TICK (keyboard + physics)
     # ══════════════════════════════════════════════════════════════════
+    def _tick(self):
+        now = time.time()
+        dt = min(now - self._last_time, 0.1)
+        self._last_time = now
 
-    def _toggle_cam(self):
-        if self.running: self._stop_cam()
-        else: self._start_cam()
+        # Process held keys
+        moved = False
+        if not self.macro.active:
+            for key in list(self._keys_held):
+                if key in KEY_MAP:
+                    joint, direction = KEY_MAP[key]
+                    cur = self.arm.angles[joint]
+                    self.arm.set_angle(joint, cur + direction * self._move_speed)
+                    moved = True
+            if moved:
+                self.arm.enforce_ground_constraint()
+                self._sync_sliders()
 
-    def _start_cam(self):
-        if not self.tracker: self._log("No tracker"); return
-        try: self.cap = cv2.VideoCapture(CAM_INDEX)
-        except Exception as e: self._log(f"Err: {e}"); return
-        if not self.cap or not self.cap.isOpened(): self._log("No camera"); return
-        ok,f = self.cap.read()
-        if not ok: self._log("Read failed"); self.cap.release(); self.cap=None; return
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAM_W)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAM_H)
-        self.cap.set(cv2.CAP_PROP_FPS, 30)
-        fov = detect_camera_fov(self.cap); self.tracker.set_fov(fov)
-        self.running = True; self._frame_count = 0
-        self.btn_cam.config(text="Stop Camera", bg="#5c1a1a")
-        self.btn_track.config(state=tk.NORMAL)
-        self.btn_cal.config(state=tk.NORMAL)
-        self._log("Camera started"); self._loop()
+        # Update keys display
+        if self._keys_held:
+            active = sorted(self._keys_held)
+            parts = []
+            for k in active:
+                if k in KEY_MAP:
+                    j, d = KEY_MAP[k]
+                    parts.append(f"{j}{'+'if d>0 else '-'}")
+            self.keys_lbl.config(text=f"Keys: {' '.join(parts)}" if parts else "Keys: -")
+        else:
+            self.keys_lbl.config(text="Keys: -")
 
-    def _stop_cam(self):
-        self.running = False; self.tracking_on = False
-        self.btn_cam.config(text="Start Camera", bg="#1b4332")
-        self.btn_track.config(text="Track (M)", bg="#1a3a5c", state=tk.DISABLED)
-        self.btn_cal.config(state=tk.DISABLED)
-        for s in self.sliders.values(): s.config(state=tk.NORMAL)
-        if self.cap:
-            try: self.cap.release()
-            except: pass
-            self.cap = None
+        # Macro
+        if self.macro.active:
+            self.macro.update(dt)
+            self._sync_sliders()
 
-    def _loop(self):
-        if not self.running or not self.cap: return
-        try:
-            t0 = time.time()
-            ok,frame = self.cap.read()
-            if not ok or frame is None: self.root.after(50,self._loop); return
-            frame = cv2.flip(frame, 1)
-            result = self.tracker.process(frame)
-            self._last = result
+        # Physics
+        fg = self.arm.get_finger_geometry()
+        fg["grip_velocity"] = self.arm._grip_velocity.copy()
+        self.physics.step(dt, fg)
 
-            if result["detected"]:
-                a = result["angles"]
-                la = "L:OK" if result.get("left_hand_ok") else "L:--"
-                ra = "R:OK" if result.get("right_hand_ok") else "R:--"
-                self.info_lbl.config(text=f"{la} {ra}")
-                g = a.get("J6", 73)
-                self.grip_lbl.config(
-                    text=f"Claw:{'OPEN' if g>(SERVO['J6'][0]+SERVO['J6'][1])/2 else 'CLOSED'}")
-                if self.tracking_on and not self.macro.active:
-                    self.arm.apply_angles_smooth(a)
-                    self._sync_sliders()
-            else:
-                self.info_lbl.config(text="No hands"); self.grip_lbl.config(text="")
+        # Redraw if anything changed
+        if moved or self.macro.active or any(not b.resting or b.grabbed for b in self.physics.blocks):
+            self._draw_arm()
 
-            now = time.time(); dt = min(now-self._last_time, .1); self._last_time = now
-            if self.macro.active: self.macro.update(dt); self._sync_sliders()
-            fg = self.arm.get_finger_geometry()
-            fg["grip_velocity"] = self.arm._grip_velocity.copy()
-            self.physics.step(dt, fg)
-
-            self._show(result["frame"])
-            self._frame_count += 1
-            if self._frame_count % self._3D_THROTTLE == 0: self._draw_arm()
-
-            dt2 = time.time()-t0; self._ftimes.append(dt2)
-            if len(self._ftimes)>30: self._ftimes = self._ftimes[-30:]
-            self.fps_lbl.config(text=f"FPS:{1./(np.mean(self._ftimes)+1e-9):.0f}")
-            self.root.after(max(1,int((1/30-dt2)*1000)), self._loop)
-        except Exception as e:
-            print(f"[loop] {e}\n{traceback.format_exc()}", file=sys.stderr)
-            self.root.after(500, self._loop)
-
-    def _show(self, bgr):
-        try:
-            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-            lw,lh = self.cam_lbl.winfo_width(), self.cam_lbl.winfo_height()
-            if lw>30 and lh>30: rgb = cv2.resize(rgb, (lw,lh))
-            im = ImageTk.PhotoImage(image=Image.fromarray(rgb))
-            self.cam_lbl.imgtk = im; self.cam_lbl.config(image=im)
-        except: pass
-
-    def _physics_tick(self):
-        if not self.running:
-            now = time.time(); dt = min(now-self._last_time,.1); self._last_time = now
-            if self.macro.active: self.macro.update(dt); self._sync_sliders()
-            fg = self.arm.get_finger_geometry()
-            fg["grip_velocity"] = self.arm._grip_velocity.copy()
-            self.physics.step(dt, fg)
-            if any(not b.resting or b.grabbed for b in self.physics.blocks) \
-                    or self.macro.active:
-                self._draw_arm()
-        self.root.after(33, self._physics_tick)
+        self.root.after(33, self._tick)
 
     # ══════════════════════════════════════════════════════════════════
     # ACTIONS
     # ══════════════════════════════════════════════════════════════════
-
-    def _toggle_track(self):
-        self.tracking_on = not self.tracking_on
-        if self.tracking_on:
-            self.btn_track.config(text="Stop Track (M)", bg="#264b73")
-            for s in self.sliders.values(): s.config(state=tk.DISABLED)
-            self._log("Tracking ON")
-        else:
-            self.btn_track.config(text="Track (M)", bg="#1a3a5c")
-            for s in self.sliders.values(): s.config(state=tk.NORMAL)
-            self._log("Tracking OFF")
-
-    def _calibrate(self):
-        if not self.tracker: return
-        if self._last and self._last["detected"]:
-            left_lms = self._last.get("left_hand_lms")
-            self.tracker.calibrate(self._last["raw_angles"], left_lms)
-            for j in self.arm.JOINTS:
-                self.arm.set_angle(j, self._homes.get(j, SERVO[j][2]))
-            self.arm.enforce_ground_constraint()
-            self._sync_sliders(); self._draw_arm()
-            self._log("Calibrated")
-        else: self._log("No hands")
-
     def _on_dial(self, joint, offset_deg):
-        """Dial value is offset from default home."""
         absolute = SERVO[joint][2] + offset_deg
         absolute = max(SERVO[joint][0], min(SERVO[joint][1], absolute))
         self._homes[joint] = absolute
-        if self.tracker:
-            self.tracker.set_joint_home(joint, absolute)
         self._draw_arm()
 
-    def _on_sens(self, joint, val, label_widget):
-        label_widget.config(text=f"{val}%")
-        if self.tracker:
-            if joint == "J1": self.tracker.j1_forearm_sens = val
-            elif joint == "J2": self.tracker.j2_forearm_sens = val
-            elif joint == "J4": self.tracker.j4_forearm_sens = val
-            elif joint == "J5": self.tracker.j5_forearm_sens = val
-
-    def _on_finger_sens(self, key, val, label_widget):
-        """Handle finger sensitivity slider (left or right hand)."""
-        label_widget.config(text=f"{val}%")
-        if self.tracker:
-            if key == "left":
-                self.tracker.left_finger_sens = val
-            elif key == "right":
-                self.tracker.right_finger_sens = val
+    def _on_speed(self, v):
+        self._move_speed = float(v)
+        self.speed_lbl.config(text=f"{float(v):.1f}°/tick")
 
     def _go_home(self):
         self.macro.cancel()
-        # Apply user's home offsets instead of config defaults
         for j in self.arm.JOINTS:
             self.arm.set_angle(j, self._homes.get(j, SERVO[j][2]))
         self.arm.enforce_ground_constraint()
         self._sync_sliders(); self._draw_arm()
 
     def _slider(self, j, v):
-        if self.tracking_on: return
         self.arm.set_angle(j, v)
         self.arm.enforce_ground_constraint()
         self.slbl[j].config(text=f"{self.arm.angles[j]:.0f}")
@@ -974,7 +745,7 @@ class App:
         self._draw_arm()
 
     def _sync_sliders(self):
-        for j,sc in self.sliders.items():
+        for j, sc in self.sliders.items():
             a = self.arm.angles[j]; sc.set(a)
             self.slbl[j].config(text=f"{a:.0f}")
 
@@ -984,9 +755,6 @@ class App:
         self.physics.clear(); self._log("Cleared"); self._draw_arm()
     def _run_macro(self, color):
         if self.macro.active: self.macro.cancel()
-        self.tracking_on = False
-        self.btn_track.config(text="Track (M)", bg="#1a3a5c")
-        for s in self.sliders.values(): s.config(state=tk.DISABLED)
         self._log(self.macro.start_pickup(color))
 
     def _log(self, msg):
@@ -1001,25 +769,31 @@ class App:
         print(f"[TK] {''.join(traceback.format_exception(*a))}", file=sys.stderr)
 
     def close(self):
-        self.running = False
-        if self.cap:
-            try: self.cap.release()
-            except: pass
-        if self.tracker:
-            try: self.tracker.release()
-            except: pass
         self.root.destroy()
 
 
 def main():
-    root = tk.Tk(); app = App(root)
+    root = tk.Tk()
+    app = App(root)
     root.protocol("WM_DELETE_WINDOW", app.close)
-    root.bind("<space>", lambda e: app._calibrate())
+
+    # Key press/release for held-key continuous movement
+    def on_key_press(e):
+        k = e.char.lower() if e.char else ''
+        if k in KEY_MAP:
+            app._keys_held.add(k)
+    def on_key_release(e):
+        k = e.char.lower() if e.char else ''
+        app._keys_held.discard(k)
+
+    root.bind("<KeyPress>", on_key_press)
+    root.bind("<KeyRelease>", on_key_release)
+
+    # Single-press bindings
     root.bind("<h>", lambda e: app._go_home())
-    root.bind("<m>", lambda e: app._toggle_track())
-    root.bind("<v>", lambda e: app._toggle_auto_view())
-    root.bind("<l>", lambda e: app._toggle_lock_view())
     root.bind("<b>", lambda e: app._spawn_block())
+    root.bind("<v>", lambda e: app._toggle_auto_view())
+    root.bind("<L>", lambda e: app._toggle_lock_view())  # Shift+L to avoid J5 conflict
     root.bind("<Escape>", lambda e: app.close())
     root.bind("1", lambda e: app._run_macro("Red"))
     root.bind("2", lambda e: app._run_macro("Blue"))
